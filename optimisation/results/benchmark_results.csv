@@ -1,0 +1,1 @@
+model,mean_latency_ms,p95_latency_ms,file_size_kb,accuracy_percent,critical_recall_percent,energy_mj
