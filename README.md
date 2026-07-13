@@ -493,9 +493,6 @@ Dependencies will be recreated using `requirements.txt`.
 
 **Donald Johnson A.**
 
-AIML ZG535 — Edge AI Systems  
-BITS Pilani
-
 ---
 
 ## License
