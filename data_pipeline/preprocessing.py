@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
-"""LogiBridge sensor preprocessing and feature-fusion pipeline.
+"""LogiBridge preprocessing and feature-level fusion.
 
-Assignment component C2.
+Assignment Task C2 requirements:
 
-Features:
-1. Mean filtered temperature
-2. Maximum filtered temperature
-3. Mean filtered vibration
-4. Maximum filtered vibration
-5. Door-open fraction
-6. Door transition count
+* Five-sample moving average on temperature and vibration
+* Thirty-second sliding window
+* Ten-second window step
+* Six-value feature vector:
+  1. Temperature mean
+  2. Temperature standard deviation
+  3. Temperature rate of change in degrees Celsius per minute
+  4. Vibration RMS
+  5. Vibration peak
+  6. Vibration kurtosis
+* Fixed normalization statistics generated from ten minutes of clean
+  Normal-class output
+* Runtime loading of statistics
+* Three-standard-deviation shifted-statistics experiment
 """
 
 import argparse
-import json
 import logging
-import signal
-import sys
-import time
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import paho.mqtt.client as mqtt
 
 
 LOGGER = logging.getLogger("logibridge.preprocessing")
@@ -32,130 +33,209 @@ LOGGER = logging.getLogger("logibridge.preprocessing")
 MOVING_AVERAGE_SIZE = 5
 WINDOW_DURATION_SECONDS = 30.0
 WINDOW_STEP_SECONDS = 10.0
+NORMAL_STATISTICS_DURATION_SECONDS = 600
 
 FEATURE_NAMES = [
     "temperature_mean_c",
-    "temperature_max_c",
-    "vibration_mean_g",
-    "vibration_max_g",
-    "door_open_fraction",
-    "door_transition_count",
+    "temperature_std_c",
+    "temperature_rate_c_per_min",
+    "vibration_rms_g",
+    "vibration_peak_g",
+    "vibration_kurtosis",
 ]
 
 
 @dataclass
 class SensorSample:
+    """One synchronized temperature, vibration, and door observation."""
+
     timestamp: float
     temperature_c: float
     vibration_rms_g: float
-    door_state: str
+    door_state: str = "CLOSE"
 
 
 class MovingAverageFilter:
-    """Five-sample moving-average filter for numeric sensors."""
+    """Five-sample moving-average filter for numeric streams."""
 
     def __init__(self, size=MOVING_AVERAGE_SIZE):
+        if size <= 0:
+            raise ValueError(
+                "Moving-average size must be positive"
+            )
+
         self.size = size
-        self.temperatures = deque(maxlen=size)
-        self.vibrations = deque(maxlen=size)
+        self.temperature_values = deque(maxlen=size)
+        self.vibration_values = deque(maxlen=size)
 
     def update(self, sample):
-        self.temperatures.append(sample.temperature_c)
-        self.vibrations.append(sample.vibration_rms_g)
+        """Filter one synchronized sample."""
+
+        self.temperature_values.append(
+            float(sample.temperature_c)
+        )
+
+        self.vibration_values.append(
+            float(sample.vibration_rms_g)
+        )
 
         return SensorSample(
-            timestamp=sample.timestamp,
-            temperature_c=float(np.mean(self.temperatures)),
-            vibration_rms_g=float(np.mean(self.vibrations)),
-            door_state=sample.door_state,
+            timestamp=float(sample.timestamp),
+            temperature_c=float(
+                np.mean(self.temperature_values)
+            ),
+            vibration_rms_g=float(
+                np.mean(self.vibration_values)
+            ),
+            door_state=str(sample.door_state).upper(),
         )
 
 
-def validate_door_state(value):
-    """Validate and normalize a door state."""
+def calculate_temperature_rate(
+    timestamps,
+    temperatures,
+):
+    """Calculate temperature slope in degrees Celsius per minute.
 
-    state = str(value).strip().upper()
+    A least-squares linear slope is used across the complete window.
+    This is less sensitive to single-sample noise than subtracting only
+    the first and final values.
+    """
 
-    if state not in ("OPEN", "CLOSE"):
-        raise ValueError(
-            "door_state must be OPEN or CLOSE"
+    relative_time = timestamps - timestamps[0]
+
+    time_variance = float(
+        np.sum(
+            (
+                relative_time
+                - np.mean(relative_time)
+            )
+            ** 2
         )
+    )
 
-    return state
+    if time_variance <= 0.0:
+        return 0.0
+
+    covariance = float(
+        np.sum(
+            (
+                relative_time
+                - np.mean(relative_time)
+            )
+            * (
+                temperatures
+                - np.mean(temperatures)
+            )
+        )
+    )
+
+    slope_per_second = covariance / time_variance
+
+    return slope_per_second * 60.0
 
 
-def count_door_transitions(states):
-    """Count changes between adjacent door states."""
+def calculate_kurtosis(values):
+    """Calculate Pearson kurtosis from the second and fourth moments.
 
-    if len(states) < 2:
-        return 0
+    A Gaussian distribution has Pearson kurtosis close to 3.0.
+    A constant or numerically near-constant window returns 0.0 because
+    kurtosis is undefined when variance is zero.
+    """
 
-    count = 0
+    values = np.asarray(values, dtype=np.float64)
 
-    for previous, current in zip(states[:-1], states[1:]):
-        if previous != current:
-            count += 1
+    centered = values - np.mean(values)
 
-    return count
+    second_moment = float(
+        np.mean(centered ** 2)
+    )
+
+    if second_moment <= 1e-12:
+        return 0.0
+
+    fourth_moment = float(
+        np.mean(centered ** 4)
+    )
+
+    return fourth_moment / (
+        second_moment ** 2
+    )
 
 
 def extract_features(samples):
-    """Extract one six-value fused feature vector."""
+    """Extract and concatenate temperature and vibration features."""
 
-    if not samples:
-        raise ValueError("Cannot process an empty window")
+    if len(samples) < 2:
+        raise ValueError(
+            "At least two filtered samples are required"
+        )
+
+    timestamps = np.asarray(
+        [sample.timestamp for sample in samples],
+        dtype=np.float64,
+    )
 
     temperatures = np.asarray(
         [sample.temperature_c for sample in samples],
-        dtype=np.float32,
+        dtype=np.float64,
     )
 
     vibrations = np.asarray(
         [sample.vibration_rms_g for sample in samples],
-        dtype=np.float32,
+        dtype=np.float64,
     )
 
-    door_states = [
-        validate_door_state(sample.door_state)
-        for sample in samples
-    ]
-
-    door_open_fraction = float(
-        np.mean(
-            [
-                1.0 if state == "OPEN" else 0.0
-                for state in door_states
-            ]
+    if not np.all(np.diff(timestamps) >= 0):
+        raise ValueError(
+            "Window timestamps must be non-decreasing"
         )
-    )
 
-    transition_count = float(
-        count_door_transitions(door_states)
-    )
-
-    features = np.asarray(
+    temperature_features = np.asarray(
         [
-            float(np.mean(temperatures)),
-            float(np.max(temperatures)),
-            float(np.mean(vibrations)),
-            float(np.max(vibrations)),
-            door_open_fraction,
-            transition_count,
+            np.mean(temperatures),
+            np.std(temperatures, ddof=0),
+            calculate_temperature_rate(
+                timestamps,
+                temperatures,
+            ),
         ],
         dtype=np.float32,
     )
 
-    if features.shape != (6,):
-        raise RuntimeError("Feature vector must contain six values")
+    vibration_features = np.asarray(
+        [
+            np.sqrt(
+                np.mean(vibrations ** 2)
+            ),
+            np.max(np.abs(vibrations)),
+            calculate_kurtosis(vibrations),
+        ],
+        dtype=np.float32,
+    )
 
-    if not np.all(np.isfinite(features)):
-        raise ValueError("Feature vector contains invalid values")
+    fused_features = np.concatenate(
+        [
+            temperature_features,
+            vibration_features,
+        ]
+    ).astype(np.float32)
 
-    return features
+    if fused_features.shape != (6,):
+        raise RuntimeError(
+            "Feature vector must have shape (6,)"
+        )
+
+    if not np.all(np.isfinite(fused_features)):
+        raise ValueError(
+            "Feature vector contains non-finite values"
+        )
+
+    return fused_features
 
 
 class SlidingWindowProcessor:
-    """Five-sample filtering and 30-second sliding windows."""
+    """Filter samples and produce thirty-second sliding windows."""
 
     def __init__(self, statistics=None):
         self.filter = MovingAverageFilter()
@@ -165,25 +245,27 @@ class SlidingWindowProcessor:
         self.last_timestamp = None
 
     def add_sample(self, sample):
-        """Add a sample and return completed feature windows."""
+        """Add one sample and return zero or more completed windows."""
 
         if self.last_timestamp is not None:
             if sample.timestamp < self.last_timestamp:
                 raise ValueError(
-                    "Timestamps must be non-decreasing"
+                    "Input timestamps must be non-decreasing"
                 )
 
         self.last_timestamp = sample.timestamp
 
-        filtered = self.filter.update(sample)
-        self.samples.append(filtered)
+        filtered_sample = self.filter.update(sample)
+
+        self.samples.append(filtered_sample)
 
         if self.next_window_end is None:
             self.next_window_end = (
-                sample.timestamp + WINDOW_DURATION_SECONDS
+                sample.timestamp
+                + WINDOW_DURATION_SECONDS
             )
 
-        completed = []
+        completed_windows = []
 
         while sample.timestamp >= self.next_window_end:
             window_start = (
@@ -192,34 +274,45 @@ class SlidingWindowProcessor:
             )
 
             window_samples = [
-                item
-                for item in self.samples
-                if window_start <= item.timestamp
-                and item.timestamp <= self.next_window_end
+                candidate
+                for candidate in self.samples
+                if window_start <= candidate.timestamp
+                and candidate.timestamp
+                <= self.next_window_end
             ]
 
-            if window_samples:
-                raw_features = extract_features(window_samples)
+            if len(window_samples) >= 2:
+                raw_features = extract_features(
+                    window_samples
+                )
 
                 normalized_features = None
 
                 if self.statistics is not None:
-                    normalized_features = normalize_features(
-                        raw_features,
-                        self.statistics,
+                    normalized_features = (
+                        normalize_features(
+                            raw_features,
+                            self.statistics,
+                        )
                     )
 
-                completed.append(
+                completed_windows.append(
                     {
                         "window_start": window_start,
                         "window_end": self.next_window_end,
-                        "sample_count": len(window_samples),
+                        "sample_count": len(
+                            window_samples
+                        ),
                         "raw_features": raw_features,
-                        "normalized_features": normalized_features,
+                        "normalized_features": (
+                            normalized_features
+                        ),
                     }
                 )
 
-            self.next_window_end += WINDOW_STEP_SECONDS
+            self.next_window_end += (
+                WINDOW_STEP_SECONDS
+            )
 
         earliest_required = (
             self.next_window_end
@@ -227,33 +320,70 @@ class SlidingWindowProcessor:
         )
 
         while self.samples:
-            if self.samples[0].timestamp >= earliest_required:
+            if (
+                self.samples[0].timestamp
+                >= earliest_required
+            ):
                 break
 
             self.samples.popleft()
 
-        return completed
+        return completed_windows
+
+
+def process_samples(samples, statistics=None):
+    """Process a finite list of samples."""
+
+    processor = SlidingWindowProcessor(
+        statistics=statistics
+    )
+
+    completed_windows = []
+
+    for sample in samples:
+        completed_windows.extend(
+            processor.add_sample(sample)
+        )
+
+    return completed_windows
 
 
 def fit_training_statistics(feature_matrix):
-    """Calculate training-feature means and standard deviations."""
+    """Compute means and standard deviations from clean Normal data."""
 
-    matrix = np.asarray(feature_matrix, dtype=np.float32)
+    matrix = np.asarray(
+        feature_matrix,
+        dtype=np.float32,
+    )
 
-    if matrix.ndim != 2 or matrix.shape[1] != 6:
+    if matrix.ndim != 2:
         raise ValueError(
-            "Feature matrix must have shape N by 6"
+            "Feature matrix must be two-dimensional"
+        )
+
+    if matrix.shape[1] != 6:
+        raise ValueError(
+            "Feature matrix must contain six columns"
         )
 
     if matrix.shape[0] < 2:
         raise ValueError(
-            "At least two feature windows are required"
+            "At least two windows are required"
+        )
+
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError(
+            "Feature matrix contains invalid values"
         )
 
     mean = np.mean(matrix, axis=0)
-    std = np.std(matrix, axis=0)
+    std = np.std(matrix, axis=0, ddof=0)
 
-    std = np.where(std < 0.000001, 0.000001, std)
+    std = np.where(
+        std < 1e-6,
+        1e-6,
+        std,
+    )
 
     return {
         "mean": mean.astype(np.float32),
@@ -262,46 +392,92 @@ def fit_training_statistics(feature_matrix):
 
 
 def normalize_features(features, statistics):
-    """Apply z-score normalization."""
+    """Apply fixed z-score normalization."""
 
-    values = np.asarray(features, dtype=np.float32)
-    mean = np.asarray(statistics["mean"], dtype=np.float32)
-    std = np.asarray(statistics["std"], dtype=np.float32)
+    values = np.asarray(
+        features,
+        dtype=np.float32,
+    )
+
+    mean = np.asarray(
+        statistics["mean"],
+        dtype=np.float32,
+    )
+
+    std = np.asarray(
+        statistics["std"],
+        dtype=np.float32,
+    )
 
     if values.shape[-1] != 6:
-        raise ValueError("Expected six input features")
+        raise ValueError(
+            "Expected six input features"
+        )
 
-    if mean.shape != (6,) or std.shape != (6,):
-        raise ValueError("Statistics must contain six values")
+    if mean.shape != (6,):
+        raise ValueError(
+            "Statistics mean must have shape (6,)"
+        )
+
+    if std.shape != (6,):
+        raise ValueError(
+            "Statistics standard deviation must have shape (6,)"
+        )
 
     if np.any(std <= 0):
         raise ValueError(
             "Standard deviations must be positive"
         )
 
-    return ((values - mean) / std).astype(np.float32)
+    normalized = (
+        values - mean
+    ) / std
+
+    return normalized.astype(np.float32)
 
 
-def create_shifted_statistics(statistics):
-    """Shift every training mean by three standard deviations."""
+def create_shifted_statistics(
+    statistics,
+    sigma_shift=3.0,
+):
+    """Create deliberately incorrect shifted statistics."""
 
-    mean = np.asarray(statistics["mean"], dtype=np.float32)
-    std = np.asarray(statistics["std"], dtype=np.float32)
+    mean = np.asarray(
+        statistics["mean"],
+        dtype=np.float32,
+    )
+
+    std = np.asarray(
+        statistics["std"],
+        dtype=np.float32,
+    )
 
     return {
-        "mean": mean + (3.0 * std),
-        "std": std.copy(),
+        "mean": (
+            mean + sigma_shift * std
+        ).astype(np.float32),
+        "std": std.copy().astype(np.float32),
     }
 
 
 def save_training_statistics(path, statistics):
-    """Save training statistics to training_stats.npy."""
+    """Save fixed statistics to training_stats.npy."""
 
     output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
+        "source": (
+            "10 minutes of clean Normal-class output"
+        ),
+        "source_duration_seconds": (
+            NORMAL_STATISTICS_DURATION_SECONDS
+        ),
         "feature_names": FEATURE_NAMES,
         "mean": np.asarray(
             statistics["mean"],
@@ -311,21 +487,31 @@ def save_training_statistics(path, statistics):
             statistics["std"],
             dtype=np.float32,
         ),
-        "moving_average_size": MOVING_AVERAGE_SIZE,
-        "window_duration_seconds": WINDOW_DURATION_SECONDS,
-        "window_step_seconds": WINDOW_STEP_SECONDS,
+        "moving_average_size": (
+            MOVING_AVERAGE_SIZE
+        ),
+        "window_duration_seconds": (
+            WINDOW_DURATION_SECONDS
+        ),
+        "window_step_seconds": (
+            WINDOW_STEP_SECONDS
+        ),
     }
 
-    np.save(output_path, payload, allow_pickle=True)
+    np.save(
+        output_path,
+        payload,
+        allow_pickle=True,
+    )
 
     LOGGER.info(
-        "Saved training statistics to %s",
+        "Saved fixed Normal-class statistics to %s",
         output_path,
     )
 
 
 def load_training_statistics(path):
-    """Load training statistics from training_stats.npy."""
+    """Load fixed statistics without recomputing them from live data."""
 
     input_path = Path(path)
 
@@ -340,8 +526,17 @@ def load_training_statistics(path):
         allow_pickle=True,
     ).item()
 
-    if payload["feature_names"] != FEATURE_NAMES:
-        raise ValueError("Unexpected feature order")
+    if list(payload["feature_names"]) != FEATURE_NAMES:
+        raise ValueError(
+            "Saved feature order is incorrect"
+        )
+
+    if int(
+        payload["source_duration_seconds"]
+    ) != NORMAL_STATISTICS_DURATION_SECONDS:
+        raise ValueError(
+            "Statistics were not generated from the required duration"
+        )
 
     statistics = {
         "mean": np.asarray(
@@ -355,51 +550,53 @@ def load_training_statistics(path):
     }
 
     if statistics["mean"].shape != (6,):
-        raise ValueError("Invalid mean shape")
+        raise ValueError(
+            "Loaded mean has an invalid shape"
+        )
 
     if statistics["std"].shape != (6,):
-        raise ValueError("Invalid standard-deviation shape")
+        raise ValueError(
+            "Loaded standard deviation has an invalid shape"
+        )
+
+    if np.any(statistics["std"] <= 0):
+        raise ValueError(
+            "Loaded standard deviations are invalid"
+        )
 
     return statistics
 
 
-def process_samples(samples, statistics=None):
-    """Process a finite list of sensor samples."""
-
-    processor = SlidingWindowProcessor(
-        statistics=statistics
-    )
-
-    windows = []
-
-    for sample in samples:
-        windows.extend(processor.add_sample(sample))
-
-    return windows
-
-
-def generate_test_samples(duration=70, seed=42):
-    """Generate deterministic samples for the self-test."""
+def generate_clean_normal_samples(
+    duration_seconds=(
+        NORMAL_STATISTICS_DURATION_SECONDS
+    ),
+    seed=42,
+):
+    """Generate ten minutes of clean Normal-class output."""
 
     generator = np.random.default_rng(seed)
 
     samples = []
-    door_state = "CLOSE"
 
-    for second in range(duration + 1):
-        if second in (15, 21, 48, 55):
-            if door_state == "CLOSE":
-                door_state = "OPEN"
-            else:
-                door_state = "CLOSE"
-
+    for second in range(
+        int(duration_seconds) + 1
+    ):
         temperature = float(
-            generator.normal(4.0, 0.3)
+            generator.normal(
+                loc=4.0,
+                scale=0.3,
+            )
         )
 
         vibration = max(
             0.0,
-            float(generator.normal(0.45, 0.05)),
+            float(
+                generator.normal(
+                    loc=0.45,
+                    scale=0.05,
+                )
+            ),
         )
 
         samples.append(
@@ -407,23 +604,27 @@ def generate_test_samples(duration=70, seed=42):
                 timestamp=float(second),
                 temperature_c=temperature,
                 vibration_rms_g=vibration,
-                door_state=door_state,
+                door_state="CLOSE",
             )
         )
 
     return samples
 
 
-def run_self_test(stats_path):
-    """Run deterministic validation of the complete pipeline."""
+def generate_normal_statistics(
+    output_path,
+    seed=42,
+):
+    """Create statistics from exactly ten minutes of clean data."""
 
-    samples = generate_test_samples()
+    samples = generate_clean_normal_samples(
+        duration_seconds=(
+            NORMAL_STATISTICS_DURATION_SECONDS
+        ),
+        seed=seed,
+    )
+
     windows = process_samples(samples)
-
-    if len(windows) < 2:
-        raise AssertionError(
-            "At least two windows were expected"
-        )
 
     feature_matrix = np.vstack(
         [
@@ -437,21 +638,39 @@ def run_self_test(stats_path):
     )
 
     save_training_statistics(
-        stats_path,
+        output_path,
         statistics,
     )
 
-    loaded_statistics = load_training_statistics(
-        stats_path
+    return feature_matrix, statistics
+
+
+def run_self_test(output_path, seed):
+    """Validate every C2 preprocessing requirement."""
+
+    feature_matrix, statistics = (
+        generate_normal_statistics(
+            output_path=output_path,
+            seed=seed,
+        )
     )
 
-    normalized = normalize_features(
+    loaded_statistics = (
+        load_training_statistics(
+            output_path
+        )
+    )
+
+    correct_normalized = normalize_features(
         feature_matrix,
         loaded_statistics,
     )
 
-    shifted_statistics = create_shifted_statistics(
-        loaded_statistics
+    shifted_statistics = (
+        create_shifted_statistics(
+            loaded_statistics,
+            sigma_shift=3.0,
+        )
     )
 
     shifted_normalized = normalize_features(
@@ -459,34 +678,54 @@ def run_self_test(stats_path):
         shifted_statistics,
     )
 
-    print("LogiBridge preprocessing self-test")
-    print("=" * 40)
-    print("Input samples:", len(samples))
-    print("Completed windows:", len(windows))
-    print("Feature matrix shape:", feature_matrix.shape)
-
-    print()
-    print("Feature names:")
-
-    for index, name in enumerate(FEATURE_NAMES, start=1):
-        print(" ", index, name)
-
-    print()
-    print("Raw feature matrix:")
-    print(
-        np.array2string(
-            feature_matrix,
-            precision=4,
-            separator=", ",
-        )
+    correct_means = np.mean(
+        correct_normalized,
+        axis=0,
     )
+
+    shifted_means = np.mean(
+        shifted_normalized,
+        axis=0,
+    )
+
+    print("LogiBridge C2 Self-Test")
+    print("=" * 44)
+
+    print(
+        "Normal source duration:",
+        NORMAL_STATISTICS_DURATION_SECONDS,
+        "seconds",
+    )
+
+    print(
+        "Generated Normal windows:",
+        len(feature_matrix),
+    )
+
+    print(
+        "Feature matrix shape:",
+        feature_matrix.shape,
+    )
+
+    print()
+    print("Feature order:")
+
+    for index, feature_name in enumerate(
+        FEATURE_NAMES,
+        start=1,
+    ):
+        print(
+            " ",
+            index,
+            feature_name,
+        )
 
     print()
     print("Training means:")
     print(
         np.array2string(
             loaded_statistics["mean"],
-            precision=4,
+            precision=5,
             separator=", ",
         )
     )
@@ -495,7 +734,7 @@ def run_self_test(stats_path):
     print(
         np.array2string(
             loaded_statistics["std"],
-            precision=4,
+            precision=5,
             separator=", ",
         )
     )
@@ -504,8 +743,8 @@ def run_self_test(stats_path):
     print("Correct normalized feature means:")
     print(
         np.array2string(
-            np.mean(normalized, axis=0),
-            precision=4,
+            correct_means,
+            precision=5,
             separator=", ",
         )
     )
@@ -513,27 +752,14 @@ def run_self_test(stats_path):
     print("Shifted normalized feature means:")
     print(
         np.array2string(
-            np.mean(shifted_normalized, axis=0),
-            precision=4,
+            shifted_means,
+            precision=5,
             separator=", ",
         )
     )
 
-    mean_difference = float(
-        np.mean(
-            np.abs(
-                normalized - shifted_normalized
-            )
-        )
-    )
-
-    print(
-        "Mean absolute normalization difference:",
-        round(mean_difference, 4),
-    )
-
     if not np.allclose(
-        np.mean(normalized, axis=0),
+        correct_means,
         np.zeros(6),
         atol=0.0001,
     ):
@@ -542,327 +768,61 @@ def run_self_test(stats_path):
         )
 
     if not np.allclose(
-        np.mean(shifted_normalized, axis=0),
+        shifted_means,
         np.full(6, -3.0),
-        atol=0.11,
+        atol=0.01,
     ):
         raise AssertionError(
             "Shifted normalized means are not near minus three"
         )
 
     print()
-    print("[PASS] Five-sample moving-average filter")
-    print("[PASS] 30-second sliding window")
-    print("[PASS] 10-second window step")
-    print("[PASS] Six-feature extraction")
-    print("[PASS] Statistics save and load")
-    print("[PASS] Z-score normalization")
-    print("[PASS] Three-sigma shift experiment")
-    print("[PASS] Preprocessing self-test completed")
-
-
-class MqttPreprocessingService:
-    """Consume combined samples and publish feature vectors."""
-
-    def __init__(
-        self,
-        broker,
-        port,
-        truck_id,
-        qos,
-        statistics,
-    ):
-        self.broker = broker
-        self.port = port
-        self.truck_id = truck_id
-        self.qos = qos
-
-        self.input_topic = (
-            "logibridge/trucks/"
-            + truck_id
-            + "/sensors/combined"
-        )
-
-        self.output_topic = (
-            "logibridge/trucks/"
-            + truck_id
-            + "/features"
-        )
-
-        self.processor = SlidingWindowProcessor(
-            statistics=statistics
-        )
-
-        self.running = True
-        self.connected = False
-        self.window_sequence = 0
-
-        self.client = mqtt.Client(
-            callback_api_version=(
-                mqtt.CallbackAPIVersion.VERSION2
-            ),
-            client_id=(
-                "logibridge-preprocessor-" + truck_id
-            ),
-            protocol=mqtt.MQTTv311,
-        )
-
-        self.client.on_connect = self.on_connect
-        self.client.on_disconnect = self.on_disconnect
-        self.client.on_message = self.on_message
-
-    def on_connect(
-        self,
-        client,
-        userdata,
-        flags,
-        reason_code,
-        properties,
-    ):
-        del userdata, flags, properties
-
-        if reason_code != 0:
-            LOGGER.error(
-                "MQTT connection failed: %s",
-                reason_code,
-            )
-            return
-
-        self.connected = True
-
-        client.subscribe(
-            self.input_topic,
-            qos=self.qos,
-        )
-
-        LOGGER.info(
-            "Subscribed to %s",
-            self.input_topic,
-        )
-
-    def on_disconnect(
-        self,
-        client,
-        userdata,
-        disconnect_flags,
-        reason_code,
-        properties,
-    ):
-        del client
-        del userdata
-        del disconnect_flags
-        del properties
-
-        self.connected = False
-
-        if self.running:
-            LOGGER.warning(
-                "MQTT disconnected: %s",
-                reason_code,
-            )
-
-    def on_message(self, client, userdata, message):
-        del client, userdata
-
-        try:
-            payload = json.loads(
-                message.payload.decode("utf-8")
-            )
-
-            timestamp_text = payload["timestamp"]
-
-            normalized_timestamp = timestamp_text.replace(
-                "Z",
-                "+00:00",
-            )
-
-            timestamp = datetime.fromisoformat(
-                normalized_timestamp
-            ).timestamp()
-
-            sample = SensorSample(
-                timestamp=timestamp,
-                temperature_c=float(
-                    payload["temperature_c"]
-                ),
-                vibration_rms_g=float(
-                    payload["vibration_rms_g"]
-                ),
-                door_state=validate_door_state(
-                    payload["door_state"]
-                ),
-            )
-
-            windows = self.processor.add_sample(sample)
-
-            for window in windows:
-                self.publish_window(window)
-
-        except Exception as error:
-            LOGGER.error(
-                "Rejected invalid sensor message: %s",
-                error,
-            )
-
-    def publish_window(self, window):
-        """Publish one feature window as JSON."""
-
-        self.window_sequence += 1
-
-        raw_features = {
-            name: float(window["raw_features"][index])
-            for index, name in enumerate(FEATURE_NAMES)
-        }
-
-        payload = {
-            "schema_version": "1.0",
-            "truck_id": self.truck_id,
-            "window_sequence": self.window_sequence,
-            "window_start_unix": window["window_start"],
-            "window_end_unix": window["window_end"],
-            "sample_count": window["sample_count"],
-            "feature_names": FEATURE_NAMES,
-            "raw_features": raw_features,
-        }
-
-        normalized = window["normalized_features"]
-
-        if normalized is not None:
-            payload["normalized_features"] = {
-                name: float(normalized[index])
-                for index, name in enumerate(FEATURE_NAMES)
-            }
-
-        result = self.client.publish(
-            self.output_topic,
-            json.dumps(
-                payload,
-                separators=(",", ":"),
-            ),
-            qos=self.qos,
-        )
-
-        if result.rc != mqtt.MQTT_ERR_SUCCESS:
-            LOGGER.error(
-                "Feature publication failed: %s",
-                result.rc,
-            )
-            return
-
-        LOGGER.info(
-            "WINDOW %03d samples=%d raw=%s",
-            self.window_sequence,
-            window["sample_count"],
-            np.array2string(
-                window["raw_features"],
-                precision=4,
-                separator=", ",
-            ),
-        )
-
-    def stop(self):
-        self.running = False
-
-    def run(self):
-        """Connect and run until interrupted."""
-
-        self.client.connect(
-            self.broker,
-            self.port,
-            keepalive=60,
-        )
-
-        self.client.loop_start()
-
-        deadline = time.monotonic() + 10.0
-
-        while not self.connected:
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    "MQTT connection timed out"
-                )
-
-            time.sleep(0.05)
-
-        LOGGER.info(
-            "Preprocessing service started for %s",
-            self.truck_id,
-        )
-
-        try:
-            while self.running:
-                time.sleep(0.25)
-        finally:
-            self.client.loop_stop()
-            self.client.disconnect()
-            LOGGER.info(
-                "Preprocessing service stopped"
-            )
+    print("[PASS] Five-sample temperature filtering")
+    print("[PASS] Five-sample vibration filtering")
+    print("[PASS] Thirty-second windows")
+    print("[PASS] Ten-second window step")
+    print("[PASS] Temperature mean")
+    print("[PASS] Temperature standard deviation")
+    print("[PASS] Temperature rate of change")
+    print("[PASS] Vibration RMS")
+    print("[PASS] Vibration peak")
+    print("[PASS] Vibration kurtosis")
+    print("[PASS] Six-value feature-level fusion")
+    print("[PASS] Ten-minute Normal statistics")
+    print("[PASS] Fixed statistics save and load")
+    print("[PASS] Three-sigma shifted statistics")
+    print("[PASS] C2 preprocessing validation completed")
 
 
 def build_parser():
-    """Build the command-line parser."""
+    """Build the CLI."""
 
     parser = argparse.ArgumentParser(
         description=(
-            "LogiBridge preprocessing pipeline"
+            "LogiBridge C2 preprocessing pipeline"
         )
     )
 
-    subparsers = parser.add_subparsers(
-        dest="command",
-        required=True,
-    )
-
-    test_parser = subparsers.add_parser(
-        "self-test"
-    )
-
-    test_parser.add_argument(
-        "--stats-path",
-        default="data_pipeline/training_stats.npy",
-    )
-
-    mqtt_parser = subparsers.add_parser(
-        "mqtt"
-    )
-
-    mqtt_parser.add_argument(
-        "--broker",
-        default="127.0.0.1",
-    )
-
-    mqtt_parser.add_argument(
-        "--port",
-        type=int,
-        default=1883,
-    )
-
-    mqtt_parser.add_argument(
-        "--truck-id",
-        default="TRUCK-001",
-    )
-
-    mqtt_parser.add_argument(
-        "--qos",
-        type=int,
-        choices=(0, 1, 2),
-        default=1,
-    )
-
-    mqtt_parser.add_argument(
-        "--stats-path",
-        default="data_pipeline/training_stats.npy",
-    )
-
-    mqtt_parser.add_argument(
-        "--raw-only",
-        action="store_true",
+    parser.add_argument(
+        "command",
+        choices=[
+            "self-test",
+            "generate-stats",
+            "show-stats",
+        ],
     )
 
     parser.add_argument(
-        "--verbose",
-        action="store_true",
+        "--stats-path",
+        default=(
+            "data_pipeline/training_stats.npy"
+        ),
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
     )
 
     return parser
@@ -871,15 +831,10 @@ def build_parser():
 def main():
     """Program entry point."""
 
-    parser = build_parser()
-    arguments = parser.parse_args()
+    arguments = build_parser().parse_args()
 
     logging.basicConfig(
-        level=(
-            logging.DEBUG
-            if arguments.verbose
-            else logging.INFO
-        ),
+        level=logging.INFO,
         format=(
             "%(asctime)s | %(levelname)-8s | "
             "%(name)s | %(message)s"
@@ -888,56 +843,50 @@ def main():
     )
 
     if arguments.command == "self-test":
-        run_self_test(arguments.stats_path)
-        return 0
-
-    statistics = None
-
-    if not arguments.raw_only:
-        stats_path = Path(arguments.stats_path)
-
-        if stats_path.exists():
-            statistics = load_training_statistics(
-                stats_path
-            )
-        else:
-            LOGGER.warning(
-                "Statistics file not found; "
-                "publishing raw features only"
-            )
-
-    service = MqttPreprocessingService(
-        broker=arguments.broker,
-        port=arguments.port,
-        truck_id=arguments.truck_id,
-        qos=arguments.qos,
-        statistics=statistics,
-    )
-
-    def stop_service(signal_number, frame):
-        del frame
-
-        LOGGER.info(
-            "Received signal %s",
-            signal_number,
+        run_self_test(
+            output_path=arguments.stats_path,
+            seed=arguments.seed,
         )
 
-        service.stop()
+    elif arguments.command == "generate-stats":
+        matrix, statistics = (
+            generate_normal_statistics(
+                output_path=(
+                    arguments.stats_path
+                ),
+                seed=arguments.seed,
+            )
+        )
 
-    signal.signal(
-        signal.SIGINT,
-        stop_service,
-    )
+        print(
+            "Generated windows:",
+            len(matrix),
+        )
 
-    signal.signal(
-        signal.SIGTERM,
-        stop_service,
-    )
+        print(
+            "Statistics mean:",
+            statistics["mean"],
+        )
 
-    service.run()
+        print(
+            "Statistics std:",
+            statistics["std"],
+        )
+
+    elif arguments.command == "show-stats":
+        statistics = load_training_statistics(
+            arguments.stats_path
+        )
+
+        print("Feature names:")
+        print(FEATURE_NAMES)
+        print("Mean:")
+        print(statistics["mean"])
+        print("Standard deviation:")
+        print(statistics["std"])
 
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

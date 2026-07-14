@@ -1,36 +1,19 @@
-# MQTT Architecture and Data-Fusion Justification
+# MQTT Architecture and Feature-Level Data Fusion
 
-## 1. Purpose
+## 1. Sensor and MQTT Architecture
 
-The LogiBridge MQTT pipeline transports cold-chain sensor readings between
-the truck sensor simulator, the edge preprocessing service, the inference
-service, the drift monitor, and downstream alert consumers.
+LogiBridge collects three cold-chain data streams:
 
-The transport layer is designed to support local operation on the truck.
-Sensor collection, preprocessing, feature extraction, model inference, and
-alert generation can continue while the cellular uplink is unavailable.
+- Temperature at 1 Hz
+- Vibration RMS at 0.5 Hz
+- Discrete door OPEN and CLOSE events
 
-## 2. MQTT Components
+The sensor simulator publishes these streams to a local Mosquitto broker.
+Local MQTT communication decouples sensor production, preprocessing,
+inference, drift monitoring, and alert handling.
 
-The MQTT architecture contains the following logical components:
+Truck-scoped topics include:
 
-1. Sensor simulator or physical sensor gateway
-2. Local Mosquitto broker
-3. Preprocessing and feature-fusion service
-4. Edge inference service
-5. Drift-monitoring service
-6. Local alert and event log
-7. Optional cellular operations-centre uplink
-
-The local broker decouples data producers from consumers. Each service can
-publish or subscribe independently without requiring direct point-to-point
-connections between every component.
-
-## 3. Topic Hierarchy
-
-The topic hierarchy is scoped by truck identifier.
-
-    logibridge/trucks/{truck_id}/status
     logibridge/trucks/{truck_id}/sensors/temperature
     logibridge/trucks/{truck_id}/sensors/vibration
     logibridge/trucks/{truck_id}/sensors/door
@@ -38,265 +21,162 @@ The topic hierarchy is scoped by truck identifier.
     logibridge/trucks/{truck_id}/features
     logibridge/trucks/{truck_id}/inference
     logibridge/trucks/{truck_id}/alerts
-    logibridge/trucks/{truck_id}/monitoring/psi
 
-For example:
+The MQTT broker and processing services run on the truck edge node. The
+pipeline therefore continues to operate without a cellular connection.
 
-    logibridge/trucks/TRUCK-001/sensors/temperature
-    logibridge/trucks/TRUCK-001/features
-    logibridge/trucks/TRUCK-001/inference
+## 2. Required Preprocessing Sequence
 
-Truck-specific topic roots prevent readings from different vehicles from
-being mixed. A fleet-level subscriber can use the wildcard topic:
+Temperature and vibration are first smoothed independently using
+five-sample moving-average filters.
 
-    logibridge/trucks/+/inference
+The filtered streams are then analysed using a 30-second sliding window with
+a 10-second step.
 
-A subscriber that requires all events from one truck can use:
+The temperature stream produces:
 
-    logibridge/trucks/TRUCK-001/#
+1. Temperature mean
+2. Temperature standard deviation
+3. Temperature rate of change in degrees Celsius per minute
 
-## 4. Publisher and Subscriber Responsibilities
+The vibration stream produces:
 
-### Sensor simulator
+1. Vibration RMS
+2. Vibration peak
+3. Vibration kurtosis
 
-The sensor simulator publishes:
+The two three-value feature groups are concatenated in a fixed order:
 
-- Temperature readings
-- Vibration RMS readings
-- Door-state events
-- A synchronized combined sensor state
-- Retained ONLINE and OFFLINE status
+    [
+        temperature_mean_c,
+        temperature_std_c,
+        temperature_rate_c_per_min,
+        vibration_rms_g,
+        vibration_peak_g,
+        vibration_kurtosis
+    ]
 
-### Preprocessing service
+This forms the joint six-value model input.
 
-The preprocessing service subscribes to:
+## 3. Door Events
 
-    logibridge/trucks/{truck_id}/sensors/combined
+Door events remain an important operational stream and are retained in the
+MQTT architecture for event logging, alert interpretation, and future model
+extensions.
 
-It applies:
+Door-derived values are not added to the current model input because the
+assignment specifies an exact six-value vector consisting of three
+temperature features and three vibration features.
 
-- Five-sample moving-average filtering
-- Thirty-second windowing
-- Ten-second window stepping
-- Six-feature extraction
-- Training-statistics normalization
+## 4. Normalisation
 
-It publishes processed windows to:
+Feature means and standard deviations are calculated from ten minutes of
+clean Normal-class output.
 
-    logibridge/trucks/{truck_id}/features
+The resulting values are saved in:
 
-### Inference service
+    data_pipeline/training_stats.npy
 
-The inference service will subscribe to the feature topic and publish class
-probabilities and the predicted Normal, Warning, or Critical state to:
+The file records:
 
-    logibridge/trucks/{truck_id}/inference
+- Feature order
+- Feature means
+- Feature standard deviations
+- Clean Normal source duration
+- Moving-average size
+- Window duration
+- Window step
 
-### Drift-monitoring service
+Training, validation, testing, and runtime inference load this fixed file.
+Statistics are never recomputed from live data because doing so would allow
+the reference distribution to drift with an ongoing fault.
 
-The drift monitor will observe feature or inference messages and publish
-Population Stability Index results to:
+## 5. Shifted-Statistics Experiment
 
-    logibridge/trucks/{truck_id}/monitoring/psi
+The mandatory experiment uses two inference conditions:
 
-### Alert consumer
+### Correct condition
 
-The local alert service will consume Critical predictions and publish or log
-alerts under:
+    normalized = (features - training_mean) / training_std
 
-    logibridge/trucks/{truck_id}/alerts
+### Shifted condition
 
-## 5. Payload Design
+Each stored mean is shifted by three standard deviations:
 
-Messages use JSON because it is readable during development, simple to
-inspect with Mosquitto command-line tools, and sufficiently expressive for
-timestamps, identifiers, units, and numeric measurements.
+    shifted_mean = training_mean + 3 * training_std
 
-A sensor message includes:
+Inference is then repeated using:
 
-- Schema version
-- Truck identifier
-- Sensor name
-- UTC timestamp
-- Sequence number
-- Anomaly mode
-- Numeric value and unit
+    shifted_normalized =
+        (features - shifted_mean) / training_std
 
-A feature-window message includes:
+The baseline model accuracy under correct statistics and shifted statistics
+will be measured on the same held-out test set.
 
-- Truck identifier
-- Window sequence number
-- Window start and end timestamps
-- Sample count
-- Feature names
-- Six raw features
-- Six normalized features when statistics are available
+The exact accuracy values will be generated after the corrected D1 model is
+trained and will be reported in the Phase 2 report.
 
-The schema-version field allows future payload revisions while retaining
-compatibility checks.
+## 6. Why Feature-Level Fusion Was Selected
 
-## 6. Sampling and Windowing
+Feature-level fusion is used because temperature and vibration describe
+different but related aspects of refrigeration health.
 
-Temperature is sampled at 1 Hz.
+Temperature mean, variability, and rate of change describe cargo thermal
+condition and the direction of thermal deterioration.
 
-Vibration RMS is sampled at 0.5 Hz.
+Vibration RMS, peak, and kurtosis describe overall mechanical energy,
+short-duration shocks, and changes in the vibration distribution associated
+with mechanical abnormalities.
 
-The simulator publishes the latest synchronized combined state at 1 Hz. The
-preprocessor consumes this combined state so that temperature, vibration,
-and door context are represented on a common timeline.
+Concatenating these complementary descriptors allows one classifier to learn
+relationships across thermal and mechanical behaviour.
 
-The preprocessor applies a five-sample moving average to temperature and
-vibration. It then forms 30-second sliding windows with a 10-second step.
+The result is a compact six-value input, reducing the amount of information
+that must be passed to the model compared with raw sensor windows.
 
-Each completed window produces one six-value feature vector.
+## 7. Comparison with Data-Level Fusion
 
-## 7. Feature-Level Data Fusion
+Data-level fusion would concatenate raw temperature and vibration samples
+before feature extraction.
 
-LogiBridge uses feature-level fusion rather than raw-sample concatenation or
-decision-level fusion.
+This option is less suitable because:
 
-The fused feature vector is:
+- Temperature and vibration have different sampling rates.
+- Their units and numeric scales differ.
+- Raw fusion requires resampling and longer model inputs.
+- The resulting model would require more memory and computation.
+- Raw windows are less appropriate for the constrained edge node.
 
-1. Mean filtered temperature
-2. Maximum filtered temperature
-3. Mean filtered vibration RMS
-4. Maximum filtered vibration RMS
-5. Door-open fraction
-6. Door transition count
+Feature-level fusion handles each signal using meaningful signal-specific
+statistics before combination.
 
-Feature-level fusion is appropriate because the three sensors provide
-complementary evidence about one cargo condition.
+## 8. Comparison with Decision-Level Fusion
 
-Temperature features represent refrigeration performance and thermal drift.
+Decision-level fusion would train one model for temperature and another for
+vibration, then combine two predictions.
 
-Vibration features represent abnormal mechanical or vehicle motion.
+This option is less suitable because:
 
-Door features provide operational context. A temperature increase combined
-with an open door can have a different interpretation from a temperature
-increase while the door remains closed.
+- It requires multiple models.
+- It increases deployment and update complexity.
+- It consumes more storage and inference resources.
+- Cross-sensor relationships are observed only after each model has already
+  made an independent decision.
 
-The fused vector is compact, fixed length, and suitable for the six-input
-multilayer perceptron required by the project. It also reduces the volume of
-data passed to the inference service compared with transmitting an entire
-raw time window.
+A single fused model can learn interactions between thermal drift and
+mechanical vibration before producing the final cargo-state classification.
 
-## 8. MQTT Quality of Service
+## 9. Justification
 
-QoS 1 is used for sensor, feature, inference, monitoring, and alert messages.
+Feature-level fusion provides the best balance for this specific edge
+deployment:
 
-QoS 1 provides at-least-once delivery. This is preferred over QoS 0 because
-sensor windows and Critical predictions should not be silently discarded
-during brief local interruptions.
+- It preserves temperature-specific and vibration-specific information.
+- It creates a small and fixed model input.
+- It avoids raw-stream alignment complexity.
+- It requires only one classifier.
+- It is efficient for on-truck inference.
+- It supports the exact six-feature model required by the assignment.
 
-QoS 2 is not selected because its additional handshake and state-management
-overhead is unnecessary for this telemetry pipeline.
-
-Because QoS 1 can produce duplicate messages, consumers should use fields
-such as truck identifier, timestamp, and sequence number to detect repeated
-events when strict deduplication is required.
-
-## 9. Retained Messages
-
-Retained publication is suitable for truck status and latest door state.
-A new subscriber can immediately learn the most recently published state.
-
-High-rate temperature, vibration, combined-sensor, and feature messages are
-not retained because consumers require the current stream rather than stale
-historical windows.
-
-## 10. Offline Operation
-
-All safety-critical processing is local to the truck:
-
-    Sensors
-      |
-      v
-    Local Mosquitto Broker
-      |
-      v
-    Preprocessing
-      |
-      v
-    Local Inference
-      |
-      v
-    Local Alert and Event Log
-
-The cellular uplink is not required for sensor acquisition, preprocessing,
-classification, or local alerts.
-
-When connectivity is available, selected predictions, alerts, drift metrics,
-and summaries can be forwarded to the operations centre.
-
-When connectivity is unavailable, the edge pipeline continues operating.
-Messages intended for the operations centre should be stored locally with
-timestamps and sequence identifiers, then transmitted after connectivity is
-restored.
-
-## 11. Privacy and Data Minimisation
-
-Raw high-frequency sensor data remains local unless operational policy
-requires transmission.
-
-The operations centre can receive compact feature vectors, predictions,
-alerts, and monitoring summaries instead of every raw measurement.
-
-This reduces transmitted data and limits unnecessary exposure of detailed
-vehicle telemetry.
-
-## 12. Failure Handling
-
-The implementation includes the following controls:
-
-- MQTT connection failures are logged.
-- Invalid JSON messages are rejected.
-- Missing or invalid sensor fields are rejected.
-- Door state accepts only OPEN or CLOSE.
-- Sensor timestamps must be non-decreasing.
-- Feature vectors are checked for finite values.
-- Saved training statistics are validated before normalization.
-- Services handle SIGINT and SIGTERM for graceful shutdown.
-
-Future deployment hardening will add persistent broker storage, bounded
-offline queues, authentication, access-control lists, and encrypted uplink
-communication.
-
-## 13. Validated End-to-End Flow
-
-The implemented validation flow is:
-
-    simulator.py
-        |
-        | publishes combined JSON sensor state
-        v
-    Mosquitto
-        |
-        | topic:
-        | logibridge/trucks/TRUCK-001/sensors/combined
-        v
-    preprocessing.py
-        |
-        | five-sample filtering
-        | 30-second window
-        | 10-second step
-        | six-feature extraction
-        | normalization
-        v
-    Mosquitto
-        |
-        | topic:
-        | logibridge/trucks/TRUCK-001/features
-        v
-    Feature subscriber
-
-The self-test also validates saved statistics and compares correct
-normalization with deliberately three-standard-deviation-shifted means.
-
-## 14. Component C Conclusion
-
-The implemented sensor pipeline provides local MQTT transport, smoothing,
-windowing, synchronized feature extraction, normalization, and feature-level
-fusion.
-
-The design supports offline edge inference while preserving a structured
-path for later fleet-level monitoring and operations-centre synchronization.
+The design therefore offers more context than decision-level fusion while
+requiring substantially fewer resources than raw data-level fusion.
