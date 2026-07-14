@@ -237,19 +237,28 @@ class LogiBridgeSimulator:
 
         return round(float(value), 3)
 
+
     def generate_vibration(self) -> float:
-        """Generate one vibration RMS reading in g."""
+        """Generate one vibration RMS reading in g.
+           
+           Normal and temperature-drift modeds use N(0.45g, 0.05).
+
+           Vibration and combined modes use the bearing-wear step 
+           distribution N(1.2g, 0.15)."""
 
         if self.anomaly in {"vibration", "combined"}:
-            mean_g = 1.2
-            standard_deviation_g = 0.15
 
             value = self.random_generator.normal(
-                mean_g,
-                standard_deviation_g,
+                1.2,
+                0.15,
+            )
+        else:
+            value = self.random_generator.normal(
+                NORMAL_VIBRATION_MEAN_G,
+                NORMAL_VIBRATION_STD_G,
             )
 
-        return round(max(0.0, float(value)), 3)
+        return round(max(0.0, float(value),), 3)
 
     def maybe_generate_door_event(self) -> str | None:
         """Optionally toggle and return the cargo-door state."""
