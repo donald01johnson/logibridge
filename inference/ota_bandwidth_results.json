@@ -1,0 +1,16 @@
+{
+  "bandwidth_saved_bytes": 59546493130,
+  "bandwidth_saved_mb": 59546.49313,
+  "bandwidth_saving_percent": 99.99919948907305,
+  "baseline_image_size_bytes": 700552584,
+  "calculation_basis": "Comparison of local Docker image size with changed TFLite model-file size.",
+  "changed_model_size_bytes": 5608,
+  "fleet_size": 85,
+  "full_replacement_fleet_bytes": 59546969810,
+  "full_replacement_fleet_mb": 59546.96981,
+  "limitation": "Actual registry or cellular transfer can differ because Docker layers can be compressed and deduplicated.",
+  "model_only_fleet_bytes": 476680,
+  "model_only_fleet_mb": 0.47668,
+  "updated_image_size_bytes": 700552586,
+  "updated_model_path_used": "/tmp/logibridge-ota-candidate.tflite"
+}
