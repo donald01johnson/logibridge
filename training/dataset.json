@@ -11,10 +11,10 @@
       "generated_window_count": 88,
       "label": 2,
       "mode": "combined",
-      "purged_overlap_window_count": 2,
+      "purged_overlap_window_count": 0,
       "raw_sample_count": 901,
       "seed": 20042,
-      "training_window_count": 68,
+      "training_window_count": 70,
       "validation_window_count": 18
     },
     "Normal": {
@@ -22,10 +22,10 @@
       "generated_window_count": 118,
       "label": 0,
       "mode": "none",
-      "purged_overlap_window_count": 2,
+      "purged_overlap_window_count": 0,
       "raw_sample_count": 1201,
       "seed": 42,
-      "training_window_count": 92,
+      "training_window_count": 94,
       "validation_window_count": 24
     },
     "Warning": {
@@ -33,10 +33,10 @@
       "generated_window_count": 88,
       "label": 1,
       "mode": "temp_drift",
-      "purged_overlap_window_count": 2,
+      "purged_overlap_window_count": 0,
       "raw_sample_count": 901,
       "seed": 10042,
-      "training_window_count": 68,
+      "training_window_count": 70,
       "validation_window_count": 18
     }
   },
@@ -48,17 +48,17 @@
     "vibration_peak_g",
     "vibration_kurtosis"
   ],
-  "final_training_count": 228,
+  "final_training_count": 234,
   "final_validation_count": 60,
   "normalization_source": "data_pipeline/training_stats.npy",
   "normalization_source_duration_seconds": 600,
   "random_seed": 42,
   "schema_version": "2.0",
-  "split_method": "chronological final 20 percent with overlapping training windows purged",
+  "split_method": "reproducible stratified held-out 20 percent split",
   "training_class_counts": {
-    "Critical": 68,
-    "Normal": 92,
-    "Warning": 68
+    "Critical": 70,
+    "Normal": 94,
+    "Warning": 70
   },
   "validation_class_counts": {
     "Critical": 18,

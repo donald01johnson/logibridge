@@ -215,25 +215,12 @@ class LogiBridgeSimulator:
             "elapsed_seconds": round(self._elapsed_seconds(), 3),
         }
 
-    def _temperature_drift_offset(self, elapsed_seconds: float) -> float:
-        """Return a gradual temperature-drift offset.
+    def _temperature_drift_offset(self, elapsed_seconds):
+        """Return a linear temperature-drift """
 
-        The drift begins after a short normal warm-up and rises gradually.
-        The maximum offset is capped to maintain bounded simulation values.
-        """
-
-        warm_up_seconds = 10.0
-        drift_rate_c_per_second = 0.08
-        maximum_offset_c = 6.0
-
-        if elapsed_seconds <= warm_up_seconds:
-            return 0.0
-
-        return min(
-            (elapsed_seconds - warm_up_seconds)
-            * drift_rate_c_per_second,
-            maximum_offset_c,
-        )
+        reading_index = int(np.floor(elapsed_seconds))
+        
+        return(reading_index * 0.08)
 
     def generate_temperature(self) -> float:
         """Generate one temperature reading in degrees Celsius."""
@@ -254,20 +241,12 @@ class LogiBridgeSimulator:
         """Generate one vibration RMS reading in g."""
 
         if self.anomaly in {"vibration", "combined"}:
-            mean_g = 1.15
+            mean_g = 1.2
             standard_deviation_g = 0.15
 
             value = self.random_generator.normal(
                 mean_g,
                 standard_deviation_g,
-            )
-
-            if self.random_generator.random() < 0.12:
-                value += self.random_generator.uniform(0.30, 0.75)
-        else:
-            value = self.random_generator.normal(
-                NORMAL_VIBRATION_MEAN_G,
-                NORMAL_VIBRATION_STD_G,
             )
 
         return round(max(0.0, float(value)), 3)
@@ -541,6 +520,93 @@ class LogiBridgeSimulator:
 
         LOGGER.info("Simulation stopped")
 
+
+def generate_offline_samples(
+    anomaly,
+    duration_seconds,
+    seed=42,
+):
+    """Generate synchronized samples using C1 anomaly definitions."""
+
+    if anomaly not in {
+        "none",
+        "temp_drift",
+        "vibration",
+        "combined",
+    }:
+        raise ValueError(
+            "Unsupported anomaly mode: "
+            + str(anomaly)
+        )
+
+    generator = np.random.default_rng(seed)
+
+    samples = []
+    latest_vibration = NORMAL_VIBRATION_MEAN_G
+    door_state = "CLOSE"
+
+    for second in range(
+        int(duration_seconds) + 1
+    ):
+        temperature = generator.normal(
+            NORMAL_TEMPERATURE_MEAN_C,
+            NORMAL_TEMPERATURE_STD_C,
+        )
+
+        if anomaly in {
+            "temp_drift",
+            "combined",
+        }:
+            temperature += (
+                second * 0.08
+            )
+
+        if second % 2 == 0:
+            if anomaly in {
+                "vibration",
+                "combined",
+            }:
+                latest_vibration = (
+                    generator.normal(
+                        1.2,
+                        0.15,
+                    )
+                )
+            else:
+                latest_vibration = (
+                    generator.normal(
+                        NORMAL_VIBRATION_MEAN_G,
+                        NORMAL_VIBRATION_STD_G,
+                    )
+                )
+
+        latest_vibration = max(
+            0.0,
+            float(latest_vibration),
+        )
+
+        if generator.random() < 0.004:
+            door_state = (
+                "OPEN"
+                if door_state == "CLOSE"
+                else "CLOSE"
+            )
+
+        samples.append(
+            {
+                "timestamp": float(second),
+                "temperature_c": float(
+                    temperature
+                ),
+                "vibration_rms_g": (
+                    latest_vibration
+                ),
+                "door_state": door_state,
+            }
+        )
+
+    return samples
+    
 
 def probability(value: str) -> float:
     """Validate a command-line probability value."""

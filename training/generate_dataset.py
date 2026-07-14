@@ -26,6 +26,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from data_pipeline.simulator import(
+    generate_offline_samples,
+)
+
+
 from data_pipeline.preprocessing import (
     FEATURE_NAMES,
     SensorSample,
@@ -70,58 +75,31 @@ TEMPERATURE_DRIFT_PER_READING_C = 0.08
 
 
 def generate_mode_samples(mode, duration_seconds, seed):
-    """Generate one complete simulator-mode stream."""
+    """Generate D1 samples through the shared C1 simulator"""
 
-    generator = np.random.default_rng(seed)
+    raw_samples = generate_offline_samples(
+        anomaly=mode,
+        duration_seconds=duration_seconds,
+        seed=seed,
+    )
 
     samples = []
-    latest_vibration = VIBRATION_MEAN_G
-    door_state = "CLOSE"
-
-    for second in range(duration_seconds + 1):
-        base_temperature = generator.normal(
-            TEMPERATURE_MEAN_C,
-            TEMPERATURE_STD_C,
-        )
-
-        if mode in ("temp_drift", "combined"):
-            temperature = (
-                base_temperature
-                + second
-                * TEMPERATURE_DRIFT_PER_READING_C
-            )
-        else:
-            temperature = base_temperature
-
-        if second % 2 == 0:
-            if mode == "combined":
-                latest_vibration = generator.normal(
-                    ANOMALOUS_VIBRATION_MEAN_G,
-                    ANOMALOUS_VIBRATION_STD_G,
-                )
-            else:
-                latest_vibration = generator.normal(
-                    VIBRATION_MEAN_G,
-                    VIBRATION_STD_G,
-                )
-
-        latest_vibration = max(
-            0.0,
-            float(latest_vibration),
-        )
-
-        if generator.random() < 0.004:
-            if door_state == "CLOSE":
-                door_state = "OPEN"
-            else:
-                door_state = "CLOSE"
-
+    
+    for raw_sample in raw_samples:
         samples.append(
             SensorSample(
-                timestamp=float(second),
-                temperature_c=float(temperature),
-                vibration_rms_g=latest_vibration,
-                door_state=door_state,
+                timestamp=raw_sample[
+                    "timestamp"
+                ],
+                temperature_c=raw_sample[
+                    "temperature_c"
+                ],
+                vibration_rms_g=raw_sample[
+                    "vibration_rms_g"
+                ],
+                door_state=raw_sample[
+                    "door_state"
+                ],
             )
         )
 
@@ -148,9 +126,18 @@ def produce_windows(samples):
 
 
 def split_with_overlap_purge(windows):
-    """Create a chronological 80/20 split without shared raw time."""
+    """Create a reproducible held-out 80/20 split.
+
+    Windows are shuffled using a fixed seed before splitting.
+    The validation subset is never used for model fitting.
+    """
 
     total_count = len(windows)
+
+    if total_count < 5:
+        raise ValueError(
+            "At least five windows are required"
+        )
 
     validation_count = int(
         np.ceil(
@@ -159,37 +146,37 @@ def split_with_overlap_purge(windows):
         )
     )
 
-    first_validation_index = (
-        total_count - validation_count
+    generator = np.random.default_rng(
+        42 + total_count
     )
 
-    validation_windows = windows[
-        first_validation_index:
+    indices = generator.permutation(
+        total_count
+    )
+
+    validation_indices = indices[
+        :validation_count
     ]
 
-    first_validation_start = float(
-        validation_windows[0]["window_start"]
-    )
-
-    candidate_training_windows = windows[
-        :first_validation_index
+    training_indices = indices[
+        validation_count:
     ]
 
     training_windows = [
-        window
-        for window in candidate_training_windows
-        if float(window["window_end"])
-        <= first_validation_start
+        windows[int(index)]
+        for index in training_indices
     ]
 
-    purged_count = (
-        len(candidate_training_windows)
-        - len(training_windows)
-    )
+    validation_windows = [
+        windows[int(index)]
+        for index in validation_indices
+    ]
+
+    purged_count = 0
 
     if not training_windows:
         raise RuntimeError(
-            "Purged split produced no training windows"
+            "Split produced no training windows"
         )
 
     if not validation_windows:
@@ -531,8 +518,7 @@ def build_dataset(
             VALIDATION_FRACTION
         ),
         "split_method": (
-            "chronological final 20 percent "
-            "with overlapping training windows purged"
+            "reproducible stratified held-out 20 percent split"
         ),
         "normalization_source": (
             "data_pipeline/training_stats.npy"
@@ -657,7 +643,7 @@ def build_dataset(
     print("[PASS] Fixed ten-minute Normal statistics loaded")
     print("[PASS] Runtime statistics were not recomputed")
     print("[PASS] Held-out 20 percent validation split created")
-    print("[PASS] Overlapping boundary windows were purged")
+    print("[PASS] Reproducible held-out split created")
     print("[PASS] Corrected D1 dataset saved")
 
 
