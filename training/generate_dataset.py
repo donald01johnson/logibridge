@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
-"""Generate the LogiBridge three-class training dataset.
+"""Generate the assignment-aligned LogiBridge D1 dataset.
 
-Assignment component D1.
+Class mapping:
 
-Classes:
+0 Normal   - anomaly none       - 20 minutes
+1 Warning  - anomaly temp_drift - 15 minutes
+2 Critical - anomaly combined   - 15 minutes
 
-0 - Normal
-1 - Warning
-2 - Critical
-
-The script generates 300 feature windows:
-
-* 120 Normal windows
-* 90 Warning windows
-* 90 Critical windows
-
-Training statistics are fitted using only the training split.
+The script uses the corrected C2 preprocessing pipeline and fixed
+normalization statistics generated from ten minutes of clean Normal data.
 """
 
 import argparse
@@ -24,371 +17,219 @@ import logging
 import sys
 from pathlib import Path
 
+import numpy as np
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import numpy as np
 
 from data_pipeline.preprocessing import (
     FEATURE_NAMES,
     SensorSample,
     SlidingWindowProcessor,
-    fit_training_statistics,
+    load_training_statistics,
     normalize_features,
-    save_training_statistics,
 )
 
 
 LOGGER = logging.getLogger("logibridge.dataset")
 
-CLASS_NAMES = {
-    0: "Normal",
-    1: "Warning",
-    2: "Critical",
-}
+CLASS_NAMES = [
+    "Normal",
+    "Warning",
+    "Critical",
+]
 
-TARGET_WINDOWS = {
-    0: 120,
-    1: 90,
-    2: 90,
-}
+CLASS_MODES = [
+    "none",
+    "temp_drift",
+    "combined",
+]
 
-WINDOW_DURATION_SECONDS = 30
-WINDOW_STEP_SECONDS = 10
+CLASS_DURATIONS_SECONDS = [
+    1200,
+    900,
+    900,
+]
 
+VALIDATION_FRACTION = 0.20
 
-def required_duration_for_windows(window_count):
-    """Return the duration needed to generate an exact window count."""
+TEMPERATURE_MEAN_C = 4.0
+TEMPERATURE_STD_C = 0.3
 
-    return (
-        WINDOW_DURATION_SECONDS
-        + ((window_count - 1) * WINDOW_STEP_SECONDS)
-    )
+VIBRATION_MEAN_G = 0.45
+VIBRATION_STD_G = 0.05
 
+ANOMALOUS_VIBRATION_MEAN_G = 1.2
+ANOMALOUS_VIBRATION_STD_G = 0.15
 
-def clamp(value, minimum, maximum):
-    """Restrict a numeric value to a specified range."""
-
-    return max(minimum, min(maximum, value))
-
-
-def maybe_toggle_door(
-    generator,
-    current_state,
-    probability,
-):
-    """Randomly toggle the cargo-door state."""
-
-    if generator.random() < probability:
-        if current_state == "CLOSE":
-            return "OPEN"
-
-        return "CLOSE"
-
-    return current_state
+TEMPERATURE_DRIFT_PER_READING_C = 0.08
 
 
-def generate_normal_sample(
-    generator,
-    second,
-    door_state,
-):
-    """Generate one Normal-class sensor sample."""
-
-    temperature = generator.normal(4.0, 0.30)
-    vibration = generator.normal(0.45, 0.05)
-
-    door_state = maybe_toggle_door(
-        generator,
-        door_state,
-        probability=0.006,
-    )
-
-    sample = SensorSample(
-        timestamp=float(second),
-        temperature_c=float(
-            clamp(temperature, 2.5, 5.5)
-        ),
-        vibration_rms_g=float(
-            clamp(vibration, 0.20, 0.70)
-        ),
-        door_state=door_state,
-    )
-
-    return sample, door_state
-
-
-def generate_warning_sample(
-    generator,
-    second,
-    door_state,
-    scenario,
-):
-    """Generate one Warning-class sensor sample."""
-
-    cycle_position = second % 180
-    gradual_offset = min(cycle_position / 180.0, 1.0)
-
-    if scenario == 0:
-        temperature_mean = 5.5 + (1.4 * gradual_offset)
-        vibration_mean = 0.58
-        door_probability = 0.012
-
-    elif scenario == 1:
-        temperature_mean = 4.8
-        vibration_mean = 0.76
-        door_probability = 0.014
-
-    else:
-        temperature_mean = 5.25 + (0.7 * gradual_offset)
-        vibration_mean = 0.68
-        door_probability = 0.020
-
-    temperature = generator.normal(
-        temperature_mean,
-        0.38,
-    )
-
-    vibration = generator.normal(
-        vibration_mean,
-        0.08,
-    )
-
-    if generator.random() < 0.025:
-        vibration += generator.uniform(0.10, 0.25)
-
-    door_state = maybe_toggle_door(
-        generator,
-        door_state,
-        probability=door_probability,
-    )
-
-    sample = SensorSample(
-        timestamp=float(second),
-        temperature_c=float(
-            clamp(temperature, 3.2, 8.2)
-        ),
-        vibration_rms_g=float(
-            clamp(vibration, 0.30, 1.15)
-        ),
-        door_state=door_state,
-    )
-
-    return sample, door_state
-
-
-def generate_critical_sample(
-    generator,
-    second,
-    door_state,
-    scenario,
-):
-    """Generate one Critical-class sensor sample."""
-
-    cycle_position = second % 150
-    gradual_offset = min(cycle_position / 120.0, 1.0)
-
-    if scenario == 0:
-        temperature_mean = 8.3 + (2.0 * gradual_offset)
-        vibration_mean = 0.95
-        door_probability = 0.030
-
-    elif scenario == 1:
-        temperature_mean = 7.2
-        vibration_mean = 1.28
-        door_probability = 0.035
-
-    else:
-        temperature_mean = 8.8 + (1.5 * gradual_offset)
-        vibration_mean = 1.20
-        door_probability = 0.055
-
-    temperature = generator.normal(
-        temperature_mean,
-        0.50,
-    )
-
-    vibration = generator.normal(
-        vibration_mean,
-        0.13,
-    )
-
-    if generator.random() < 0.10:
-        vibration += generator.uniform(0.20, 0.55)
-
-    door_state = maybe_toggle_door(
-        generator,
-        door_state,
-        probability=door_probability,
-    )
-
-    sample = SensorSample(
-        timestamp=float(second),
-        temperature_c=float(
-            clamp(temperature, 5.5, 13.0)
-        ),
-        vibration_rms_g=float(
-            clamp(vibration, 0.65, 2.20)
-        ),
-        door_state=door_state,
-    )
-
-    return sample, door_state
-
-
-def generate_class_windows(
-    class_label,
-    target_window_count,
-    seed,
-):
-    """Generate raw feature windows for one class."""
+def generate_mode_samples(mode, duration_seconds, seed):
+    """Generate one complete simulator-mode stream."""
 
     generator = np.random.default_rng(seed)
 
-    duration = required_duration_for_windows(
-        target_window_count
-    )
-
-    processor = SlidingWindowProcessor()
-
-    windows = []
+    samples = []
+    latest_vibration = VIBRATION_MEAN_G
     door_state = "CLOSE"
 
-    for second in range(duration + 1):
-        scenario = (second // 300) % 3
-
-        if class_label == 0:
-            sample, door_state = generate_normal_sample(
-                generator,
-                second,
-                door_state,
-            )
-
-        elif class_label == 1:
-            sample, door_state = generate_warning_sample(
-                generator,
-                second,
-                door_state,
-                scenario,
-            )
-
-        elif class_label == 2:
-            sample, door_state = generate_critical_sample(
-                generator,
-                second,
-                door_state,
-                scenario,
-            )
-
-        else:
-            raise ValueError(
-                "Unsupported class label: "
-                + str(class_label)
-            )
-
-        completed_windows = processor.add_sample(sample)
-
-        for completed_window in completed_windows:
-            windows.append(
-                completed_window["raw_features"]
-            )
-
-    feature_matrix = np.asarray(
-        windows,
-        dtype=np.float32,
-    )
-
-    if feature_matrix.shape != (
-        target_window_count,
-        len(FEATURE_NAMES),
-    ):
-        raise RuntimeError(
-            "Generated feature matrix has unexpected shape. "
-            "Expected "
-            + str(
-                (
-                    target_window_count,
-                    len(FEATURE_NAMES),
-                )
-            )
-            + ", received "
-            + str(feature_matrix.shape)
+    for second in range(duration_seconds + 1):
+        base_temperature = generator.normal(
+            TEMPERATURE_MEAN_C,
+            TEMPERATURE_STD_C,
         )
 
-    labels = np.full(
-        target_window_count,
-        class_label,
-        dtype=np.int64,
-    )
+        if mode in ("temp_drift", "combined"):
+            temperature = (
+                base_temperature
+                + second
+                * TEMPERATURE_DRIFT_PER_READING_C
+            )
+        else:
+            temperature = base_temperature
 
-    LOGGER.info(
-        "Generated %d %s windows",
-        target_window_count,
-        CLASS_NAMES[class_label],
-    )
+        if second % 2 == 0:
+            if mode == "combined":
+                latest_vibration = generator.normal(
+                    ANOMALOUS_VIBRATION_MEAN_G,
+                    ANOMALOUS_VIBRATION_STD_G,
+                )
+            else:
+                latest_vibration = generator.normal(
+                    VIBRATION_MEAN_G,
+                    VIBRATION_STD_G,
+                )
 
-    return feature_matrix, labels
+        latest_vibration = max(
+            0.0,
+            float(latest_vibration),
+        )
+
+        if generator.random() < 0.004:
+            if door_state == "CLOSE":
+                door_state = "OPEN"
+            else:
+                door_state = "CLOSE"
+
+        samples.append(
+            SensorSample(
+                timestamp=float(second),
+                temperature_c=float(temperature),
+                vibration_rms_g=latest_vibration,
+                door_state=door_state,
+            )
+        )
+
+    return samples
 
 
-def split_one_class(
-    features,
-    labels,
-    generator,
-):
-    """Split one class into train, validation, and test sets."""
+def produce_windows(samples):
+    """Run samples through the corrected C2 pipeline."""
 
-    sample_count = len(labels)
+    processor = SlidingWindowProcessor()
+    windows = []
 
-    indices = generator.permutation(sample_count)
+    for sample in samples:
+        windows.extend(
+            processor.add_sample(sample)
+        )
 
-    training_count = int(
-        np.floor(sample_count * 0.70)
-    )
+    if not windows:
+        raise RuntimeError(
+            "No preprocessing windows were generated"
+        )
+
+    return windows
+
+
+def split_with_overlap_purge(windows):
+    """Create a chronological 80/20 split without shared raw time."""
+
+    total_count = len(windows)
 
     validation_count = int(
-        np.floor(sample_count * 0.15)
+        np.ceil(
+            total_count
+            * VALIDATION_FRACTION
+        )
     )
 
-    test_count = (
-        sample_count
-        - training_count
-        - validation_count
+    first_validation_index = (
+        total_count - validation_count
     )
 
-    training_indices = indices[:training_count]
-
-    validation_start = training_count
-    validation_end = (
-        validation_start + validation_count
-    )
-
-    validation_indices = indices[
-        validation_start:validation_end
+    validation_windows = windows[
+        first_validation_index:
     ]
 
-    test_indices = indices[
-        validation_end:
+    first_validation_start = float(
+        validation_windows[0]["window_start"]
+    )
+
+    candidate_training_windows = windows[
+        :first_validation_index
     ]
 
-    if len(test_indices) != test_count:
+    training_windows = [
+        window
+        for window in candidate_training_windows
+        if float(window["window_end"])
+        <= first_validation_start
+    ]
+
+    purged_count = (
+        len(candidate_training_windows)
+        - len(training_windows)
+    )
+
+    if not training_windows:
         raise RuntimeError(
-            "Incorrect test split size"
+            "Purged split produced no training windows"
         )
 
-    return {
-        "train_features": features[training_indices],
-        "train_labels": labels[training_indices],
-        "validation_features": features[
-            validation_indices
-        ],
-        "validation_labels": labels[
-            validation_indices
-        ],
-        "test_features": features[test_indices],
-        "test_labels": labels[test_indices],
-    }
+    if not validation_windows:
+        raise RuntimeError(
+            "Split produced no validation windows"
+        )
+
+    return (
+        training_windows,
+        validation_windows,
+        purged_count,
+    )
+
+
+def windows_to_matrix(windows):
+    """Convert feature-window dictionaries to one matrix."""
+
+    matrix = np.vstack(
+        [
+            window["raw_features"]
+            for window in windows
+        ]
+    ).astype(np.float32)
+
+    if matrix.ndim != 2:
+        raise ValueError(
+            "Feature matrix must be two-dimensional"
+        )
+
+    if matrix.shape[1] != 6:
+        raise ValueError(
+            "Feature matrix must have six columns"
+        )
+
+    if not np.isfinite(matrix).all():
+        raise ValueError(
+            "Feature matrix contains invalid values"
+        )
+
+    return matrix
 
 
 def combine_and_shuffle(
@@ -396,7 +237,7 @@ def combine_and_shuffle(
     label_parts,
     generator,
 ):
-    """Combine class-specific arrays and shuffle them together."""
+    """Combine class arrays and apply one reproducible shuffle."""
 
     features = np.concatenate(
         feature_parts,
@@ -408,17 +249,23 @@ def combine_and_shuffle(
         axis=0,
     )
 
-    indices = generator.permutation(len(labels))
+    permutation = generator.permutation(
+        len(labels)
+    )
 
-    return features[indices], labels[indices]
+    return (
+        features[permutation],
+        labels[permutation],
+    )
 
 
-def class_counts(labels):
-    """Return class counts in a JSON-friendly dictionary."""
+def count_labels(labels):
+    """Return class counts for metadata."""
 
     counts = {}
 
-    for class_label, class_name in CLASS_NAMES.items():
+    for class_label in range(3):
+        class_name = CLASS_NAMES[class_label]
         counts[class_name] = int(
             np.sum(labels == class_label)
         )
@@ -426,109 +273,28 @@ def class_counts(labels):
     return counts
 
 
-def validate_dataset(
-    raw_train_features,
-    train_labels,
-    raw_validation_features,
-    validation_labels,
-    raw_test_features,
-    test_labels,
-):
-    """Validate all dataset arrays before saving."""
+def validate_statistics_metadata(path):
+    """Verify that C2 statistics came from ten clean minutes."""
 
-    datasets = {
-        "raw_train_features": raw_train_features,
-        "raw_validation_features": (
-            raw_validation_features
-        ),
-        "raw_test_features": raw_test_features,
-    }
+    payload = np.load(
+        path,
+        allow_pickle=True,
+    ).item()
 
-    for name, values in datasets.items():
-        if values.ndim != 2:
-            raise ValueError(
-                name + " must be two-dimensional"
-            )
-
-        if values.shape[1] != len(FEATURE_NAMES):
-            raise ValueError(
-                name + " must contain six columns"
-            )
-
-        if not np.all(np.isfinite(values)):
-            raise ValueError(
-                name + " contains non-finite values"
-            )
-
-    label_sets = {
-        "train_labels": train_labels,
-        "validation_labels": validation_labels,
-        "test_labels": test_labels,
-    }
-
-    for name, values in label_sets.items():
-        unique_values = set(
-            np.unique(values).tolist()
-        )
-
-        if unique_values != {0, 1, 2}:
-            raise ValueError(
-                name
-                + " does not contain all three classes"
-            )
-
-    total_samples = (
-        len(train_labels)
-        + len(validation_labels)
-        + len(test_labels)
-    )
-
-    if total_samples != 300:
+    if int(
+        payload["source_duration_seconds"]
+    ) != 600:
         raise ValueError(
-            "Expected 300 total windows, received "
-            + str(total_samples)
+            "training_stats.npy was not generated "
+            "from the required ten minutes"
         )
 
-
-def print_feature_summary(
-    split_name,
-    features,
-    labels,
-):
-    """Print a readable summary for one dataset split."""
-
-    print()
-    print(split_name)
-    print("-" * len(split_name))
-    print("Shape:", features.shape)
-    print("Class counts:", class_counts(labels))
-
-    print("Feature minimums:")
-    print(
-        np.array2string(
-            np.min(features, axis=0),
-            precision=4,
-            separator=", ",
+    if list(
+        payload["feature_names"]
+    ) != FEATURE_NAMES:
+        raise ValueError(
+            "training_stats.npy feature order is incorrect"
         )
-    )
-
-    print("Feature means:")
-    print(
-        np.array2string(
-            np.mean(features, axis=0),
-            precision=4,
-            separator=", ",
-        )
-    )
-
-    print("Feature maximums:")
-    print(
-        np.array2string(
-            np.max(features, axis=0),
-            precision=4,
-            separator=", ",
-        )
-    )
 
 
 def build_dataset(
@@ -536,113 +302,136 @@ def build_dataset(
     statistics_path,
     seed,
 ):
-    """Generate, split, normalize, validate, and save the dataset."""
+    """Generate, split, normalize, validate, and save D1."""
 
-    class_feature_matrices = {}
-    class_label_vectors = {}
+    output_path = Path(output_path)
+    statistics_path = Path(statistics_path)
 
-    for class_label in (0, 1, 2):
-        class_features, class_labels = (
-            generate_class_windows(
-                class_label=class_label,
-                target_window_count=(
-                    TARGET_WINDOWS[class_label]
-                ),
-                seed=seed + (class_label * 1000),
+    validate_statistics_metadata(
+        statistics_path
+    )
+
+    statistics = load_training_statistics(
+        statistics_path
+    )
+
+    class_raw_training = []
+    class_training_labels = []
+
+    class_raw_validation = []
+    class_validation_labels = []
+
+    metadata_classes = {}
+
+    for class_label in range(3):
+        class_name = CLASS_NAMES[class_label]
+        mode = CLASS_MODES[class_label]
+        duration = CLASS_DURATIONS_SECONDS[
+            class_label
+        ]
+
+        class_seed = (
+            seed
+            + class_label * 10000
+        )
+
+        samples = generate_mode_samples(
+            mode=mode,
+            duration_seconds=duration,
+            seed=class_seed,
+        )
+
+        windows = produce_windows(samples)
+
+        (
+            training_windows,
+            validation_windows,
+            purged_count,
+        ) = split_with_overlap_purge(
+            windows
+        )
+
+        raw_training = windows_to_matrix(
+            training_windows
+        )
+
+        raw_validation = windows_to_matrix(
+            validation_windows
+        )
+
+        class_raw_training.append(
+            raw_training
+        )
+
+        class_training_labels.append(
+            np.full(
+                len(raw_training),
+                class_label,
+                dtype=np.int64,
             )
         )
 
-        class_feature_matrices[class_label] = (
-            class_features
+        class_raw_validation.append(
+            raw_validation
         )
 
-        class_label_vectors[class_label] = (
-            class_labels
+        class_validation_labels.append(
+            np.full(
+                len(raw_validation),
+                class_label,
+                dtype=np.int64,
+            )
         )
 
-    split_generator = np.random.default_rng(
-        seed + 9999
+        metadata_classes[class_name] = {
+            "label": class_label,
+            "mode": mode,
+            "duration_seconds": duration,
+            "raw_sample_count": len(samples),
+            "generated_window_count": len(
+                windows
+            ),
+            "training_window_count": len(
+                training_windows
+            ),
+            "validation_window_count": len(
+                validation_windows
+            ),
+            "purged_overlap_window_count": (
+                purged_count
+            ),
+            "seed": class_seed,
+        }
+
+        LOGGER.info(
+            "%s: generated=%d train=%d "
+            "validation=%d purged=%d",
+            class_name,
+            len(windows),
+            len(training_windows),
+            len(validation_windows),
+            purged_count,
+        )
+
+    shuffle_generator = np.random.default_rng(
+        seed + 99999
     )
-
-    class_splits = {}
-
-    for class_label in (0, 1, 2):
-        class_splits[class_label] = split_one_class(
-            class_feature_matrices[class_label],
-            class_label_vectors[class_label],
-            split_generator,
-        )
 
     raw_train_features, train_labels = (
         combine_and_shuffle(
-            [
-                class_splits[class_label][
-                    "train_features"
-                ]
-                for class_label in (0, 1, 2)
-            ],
-            [
-                class_splits[class_label][
-                    "train_labels"
-                ]
-                for class_label in (0, 1, 2)
-            ],
-            split_generator,
+            class_raw_training,
+            class_training_labels,
+            shuffle_generator,
         )
     )
 
-    raw_validation_features, validation_labels = (
-        combine_and_shuffle(
-            [
-                class_splits[class_label][
-                    "validation_features"
-                ]
-                for class_label in (0, 1, 2)
-            ],
-            [
-                class_splits[class_label][
-                    "validation_labels"
-                ]
-                for class_label in (0, 1, 2)
-            ],
-            split_generator,
-        )
-    )
-
-    raw_test_features, test_labels = (
-        combine_and_shuffle(
-            [
-                class_splits[class_label][
-                    "test_features"
-                ]
-                for class_label in (0, 1, 2)
-            ],
-            [
-                class_splits[class_label][
-                    "test_labels"
-                ]
-                for class_label in (0, 1, 2)
-            ],
-            split_generator,
-        )
-    )
-
-    validate_dataset(
-        raw_train_features,
-        train_labels,
+    (
         raw_validation_features,
         validation_labels,
-        raw_test_features,
-        test_labels,
-    )
-
-    statistics = fit_training_statistics(
-        raw_train_features
-    )
-
-    save_training_statistics(
-        statistics_path,
-        statistics,
+    ) = combine_and_shuffle(
+        class_raw_validation,
+        class_validation_labels,
+        shuffle_generator,
     )
 
     train_features = normalize_features(
@@ -655,12 +444,40 @@ def build_dataset(
         statistics,
     )
 
-    test_features = normalize_features(
-        raw_test_features,
-        statistics,
+    if not np.isfinite(
+        train_features
+    ).all():
+        raise ValueError(
+            "Normalized training data is invalid"
+        )
+
+    if not np.isfinite(
+        validation_features
+    ).all():
+        raise ValueError(
+            "Normalized validation data is invalid"
+        )
+
+    training_classes = set(
+        np.unique(train_labels).tolist()
     )
 
-    output_path = Path(output_path)
+    validation_classes = set(
+        np.unique(
+            validation_labels
+        ).tolist()
+    )
+
+    if training_classes != {0, 1, 2}:
+        raise ValueError(
+            "Training split lacks a class"
+        )
+
+    if validation_classes != {0, 1, 2}:
+        raise ValueError(
+            "Validation split lacks a class"
+        )
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -673,29 +490,32 @@ def build_dataset(
             dtype=str,
         ),
         class_names=np.asarray(
-            [
-                CLASS_NAMES[0],
-                CLASS_NAMES[1],
-                CLASS_NAMES[2],
-            ],
+            CLASS_NAMES,
             dtype=str,
         ),
-        raw_train_features=raw_train_features,
+        class_modes=np.asarray(
+            CLASS_MODES,
+            dtype=str,
+        ),
+        raw_train_features=(
+            raw_train_features
+        ),
         train_features=train_features,
         train_labels=train_labels,
         raw_validation_features=(
             raw_validation_features
         ),
-        validation_features=validation_features,
-        validation_labels=validation_labels,
-        raw_test_features=raw_test_features,
-        test_features=test_features,
-        test_labels=test_labels,
-        training_mean=np.asarray(
+        validation_features=(
+            validation_features
+        ),
+        validation_labels=(
+            validation_labels
+        ),
+        fixed_training_mean=np.asarray(
             statistics["mean"],
             dtype=np.float32,
         ),
-        training_std=np.asarray(
+        fixed_training_std=np.asarray(
             statistics["std"],
             dtype=np.float32,
         ),
@@ -703,26 +523,35 @@ def build_dataset(
     )
 
     metadata = {
-        "schema_version": "1.0",
-        "random_seed": seed,
+        "schema_version": "2.0",
+        "assignment_task": "D1",
         "feature_names": FEATURE_NAMES,
         "class_names": CLASS_NAMES,
-        "target_windows": TARGET_WINDOWS,
-        "split": {
-            "training": class_counts(train_labels),
-            "validation": class_counts(
-                validation_labels
-            ),
-            "test": class_counts(test_labels),
-        },
-        "total_windows": int(
-            len(train_labels)
-            + len(validation_labels)
-            + len(test_labels)
+        "validation_fraction": (
+            VALIDATION_FRACTION
         ),
-        "moving_average_size": 5,
-        "window_duration_seconds": 30,
-        "window_step_seconds": 10,
+        "split_method": (
+            "chronological final 20 percent "
+            "with overlapping training windows purged"
+        ),
+        "normalization_source": (
+            "data_pipeline/training_stats.npy"
+        ),
+        "normalization_source_duration_seconds": 600,
+        "classes": metadata_classes,
+        "final_training_count": int(
+            len(train_labels)
+        ),
+        "final_validation_count": int(
+            len(validation_labels)
+        ),
+        "training_class_counts": count_labels(
+            train_labels
+        ),
+        "validation_class_counts": count_labels(
+            validation_labels
+        ),
+        "random_seed": seed,
     }
 
     metadata_path = output_path.with_suffix(
@@ -740,95 +569,123 @@ def build_dataset(
     )
 
     print()
-    print("LogiBridge Dataset Generation")
-    print("=" * 40)
-    print("Output:", output_path)
-    print("Metadata:", metadata_path)
-    print("Statistics:", statistics_path)
-    print("Total feature windows: 300")
-    print("Feature count:", len(FEATURE_NAMES))
+    print("LogiBridge Corrected D1 Dataset")
+    print("=" * 44)
 
-    print_feature_summary(
-        "Training split",
-        raw_train_features,
-        train_labels,
+    for class_name in CLASS_NAMES:
+        details = metadata_classes[
+            class_name
+        ]
+
+        print()
+        print(class_name)
+        print(
+            "  Mode:",
+            details["mode"],
+        )
+        print(
+            "  Duration:",
+            details[
+                "duration_seconds"
+            ],
+            "seconds",
+        )
+        print(
+            "  Generated windows:",
+            details[
+                "generated_window_count"
+            ],
+        )
+        print(
+            "  Training windows:",
+            details[
+                "training_window_count"
+            ],
+        )
+        print(
+            "  Validation windows:",
+            details[
+                "validation_window_count"
+            ],
+        )
+        print(
+            "  Purged overlap windows:",
+            details[
+                "purged_overlap_window_count"
+            ],
+        )
+
+    print()
+    print(
+        "Training shape:",
+        train_features.shape,
     )
 
-    print_feature_summary(
-        "Validation split",
-        raw_validation_features,
-        validation_labels,
+    print(
+        "Validation shape:",
+        validation_features.shape,
     )
 
-    print_feature_summary(
-        "Test split",
-        raw_test_features,
-        test_labels,
+    print(
+        "Training class counts:",
+        count_labels(train_labels),
+    )
+
+    print(
+        "Validation class counts:",
+        count_labels(validation_labels),
     )
 
     print()
-    print("Training normalization means:")
-    print(
-        np.array2string(
-            np.mean(train_features, axis=0),
-            precision=5,
-            separator=", ",
-        )
-    )
+    print("Feature order:")
 
-    print("Training normalization standard deviations:")
-    print(
-        np.array2string(
-            np.std(train_features, axis=0),
-            precision=5,
-            separator=", ",
+    for index, name in enumerate(
+        FEATURE_NAMES,
+        start=1,
+    ):
+        print(
+            " ",
+            index,
+            name,
         )
-    )
 
     print()
-    print("[PASS] Generated 120 Normal windows")
-    print("[PASS] Generated 90 Warning windows")
-    print("[PASS] Generated 90 Critical windows")
-    print("[PASS] Created stratified splits")
-    print("[PASS] Fitted statistics on training data only")
-    print("[PASS] Normalized all dataset splits")
-    print("[PASS] Saved compressed dataset")
-    print("[PASS] Saved dataset metadata")
-    print("[PASS] Dataset generation completed")
+    print("[PASS] Normal mode ran for 20 minutes")
+    print("[PASS] Temperature-drift mode ran for 15 minutes")
+    print("[PASS] Combined mode ran for 15 minutes")
+    print("[PASS] Correct six C2 features used")
+    print("[PASS] Fixed ten-minute Normal statistics loaded")
+    print("[PASS] Runtime statistics were not recomputed")
+    print("[PASS] Held-out 20 percent validation split created")
+    print("[PASS] Overlapping boundary windows were purged")
+    print("[PASS] Corrected D1 dataset saved")
 
 
 def build_parser():
-    """Build command-line arguments."""
+    """Build the command-line interface."""
 
     parser = argparse.ArgumentParser(
         description=(
-            "Generate the LogiBridge training dataset"
+            "Generate the corrected LogiBridge D1 dataset"
         )
     )
 
     parser.add_argument(
         "--output",
         default="training/dataset.npz",
-        help="Output compressed dataset path",
     )
 
     parser.add_argument(
         "--stats-path",
-        default="data_pipeline/training_stats.npy",
-        help="Output normalization statistics path",
+        default=(
+            "data_pipeline/training_stats.npy"
+        ),
     )
 
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
-        help="Random seed",
-    )
-
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable debug logging",
     )
 
     return parser
@@ -840,11 +697,7 @@ def main():
     arguments = build_parser().parse_args()
 
     logging.basicConfig(
-        level=(
-            logging.DEBUG
-            if arguments.verbose
-            else logging.INFO
-        ),
+        level=logging.INFO,
         format=(
             "%(asctime)s | %(levelname)-8s | "
             "%(name)s | %(message)s"
@@ -854,7 +707,9 @@ def main():
 
     build_dataset(
         output_path=arguments.output,
-        statistics_path=arguments.stats_path,
+        statistics_path=(
+            arguments.stats_path
+        ),
         seed=arguments.seed,
     )
 

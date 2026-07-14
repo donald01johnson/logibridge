@@ -1,0 +1,69 @@
+{
+  "assignment_task": "D1",
+  "class_names": [
+    "Normal",
+    "Warning",
+    "Critical"
+  ],
+  "classes": {
+    "Critical": {
+      "duration_seconds": 900,
+      "generated_window_count": 88,
+      "label": 2,
+      "mode": "combined",
+      "purged_overlap_window_count": 2,
+      "raw_sample_count": 901,
+      "seed": 20042,
+      "training_window_count": 68,
+      "validation_window_count": 18
+    },
+    "Normal": {
+      "duration_seconds": 1200,
+      "generated_window_count": 118,
+      "label": 0,
+      "mode": "none",
+      "purged_overlap_window_count": 2,
+      "raw_sample_count": 1201,
+      "seed": 42,
+      "training_window_count": 92,
+      "validation_window_count": 24
+    },
+    "Warning": {
+      "duration_seconds": 900,
+      "generated_window_count": 88,
+      "label": 1,
+      "mode": "temp_drift",
+      "purged_overlap_window_count": 2,
+      "raw_sample_count": 901,
+      "seed": 10042,
+      "training_window_count": 68,
+      "validation_window_count": 18
+    }
+  },
+  "feature_names": [
+    "temperature_mean_c",
+    "temperature_std_c",
+    "temperature_rate_c_per_min",
+    "vibration_rms_g",
+    "vibration_peak_g",
+    "vibration_kurtosis"
+  ],
+  "final_training_count": 228,
+  "final_validation_count": 60,
+  "normalization_source": "data_pipeline/training_stats.npy",
+  "normalization_source_duration_seconds": 600,
+  "random_seed": 42,
+  "schema_version": "2.0",
+  "split_method": "chronological final 20 percent with overlapping training windows purged",
+  "training_class_counts": {
+    "Critical": 68,
+    "Normal": 92,
+    "Warning": 68
+  },
+  "validation_class_counts": {
+    "Critical": 18,
+    "Normal": 24,
+    "Warning": 18
+  },
+  "validation_fraction": 0.2
+}
