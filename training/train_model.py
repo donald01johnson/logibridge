@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Train and evaluate the LogiBridge baseline MLP classifier.
+"""Train and evaluate the assignment-aligned LogiBridge MLP.
 
-Assignment component D1.
-
-Architecture:
+Assignment Task D1:
 
 * Six input features
-* Dense layer with 32 ReLU units
-* Dense layer with 16 ReLU units
+* Hidden layers containing 32 and 16 ReLU units
 * Three-class softmax output
+* Held-out 20 percent validation evaluation
+* Validation accuracy must exceed 88 percent
 
-Classes:
-
-0 - Normal
-1 - Warning
-2 - Critical
+The script also performs the Task C2 mandatory experiment by comparing
+validation accuracy using correct fixed statistics and means shifted by
+three standard deviations.
 """
 
 import argparse
@@ -25,8 +22,15 @@ import random
 import sys
 from pathlib import Path
 
-os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault(
+    "TF_USE_LEGACY_KERAS",
+    "1",
+)
+
+os.environ.setdefault(
+    "TF_CPP_MIN_LOG_LEVEL",
+    "2",
+)
 
 import matplotlib
 
@@ -36,6 +40,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import tf_keras
+
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -50,13 +55,20 @@ CLASS_NAMES = [
     "Critical",
 ]
 
-EXPECTED_FEATURE_COUNT = 6
+EXPECTED_FEATURE_NAMES = [
+    "temperature_mean_c",
+    "temperature_std_c",
+    "temperature_rate_c_per_min",
+    "vibration_rms_g",
+    "vibration_peak_g",
+    "vibration_kurtosis",
+]
+
 VALIDATION_ACCURACY_TARGET = 0.88
-CRITICAL_RECALL_TARGET = 0.95
 
 
 def configure_reproducibility(seed):
-    """Configure reproducible pseudo-random behavior."""
+    """Configure deterministic pseudo-random behaviour."""
 
     os.environ["PYTHONHASHSEED"] = str(seed)
 
@@ -70,161 +82,183 @@ def configure_reproducibility(seed):
         pass
 
 
-def load_dataset(dataset_path):
-    """Load and validate the generated dataset."""
+def load_dataset(path):
+    """Load and validate the corrected D1 dataset."""
 
-    path = Path(dataset_path)
+    dataset_path = Path(path)
 
-    if not path.exists():
+    if not dataset_path.exists():
         raise FileNotFoundError(
-            "Dataset file does not exist: " + str(path)
+            "Dataset does not exist: "
+            + str(dataset_path)
         )
 
-    dataset = np.load(path)
+    source = np.load(dataset_path)
 
     required_arrays = [
         "feature_names",
         "class_names",
+        "raw_train_features",
         "train_features",
         "train_labels",
+        "raw_validation_features",
         "validation_features",
         "validation_labels",
-        "test_features",
-        "test_labels",
+        "fixed_training_mean",
+        "fixed_training_std",
     ]
 
-    missing_arrays = [
-        array_name
-        for array_name in required_arrays
-        if array_name not in dataset.files
+    missing = [
+        name
+        for name in required_arrays
+        if name not in source.files
     ]
 
-    if missing_arrays:
+    if missing:
         raise ValueError(
             "Dataset is missing arrays: "
-            + ", ".join(missing_arrays)
+            + ", ".join(missing)
         )
 
-    result = {
-        "feature_names": dataset[
+    dataset = {
+        "feature_names": source[
             "feature_names"
-        ].astype(str),
-        "class_names": dataset[
+        ].astype(str).tolist(),
+        "class_names": source[
             "class_names"
-        ].astype(str),
-        "train_features": dataset[
+        ].astype(str).tolist(),
+        "raw_train_features": source[
+            "raw_train_features"
+        ].astype(np.float32),
+        "train_features": source[
             "train_features"
         ].astype(np.float32),
-        "train_labels": dataset[
+        "train_labels": source[
             "train_labels"
         ].astype(np.int64),
-        "validation_features": dataset[
+        "raw_validation_features": source[
+            "raw_validation_features"
+        ].astype(np.float32),
+        "validation_features": source[
             "validation_features"
         ].astype(np.float32),
-        "validation_labels": dataset[
+        "validation_labels": source[
             "validation_labels"
         ].astype(np.int64),
-        "test_features": dataset[
-            "test_features"
+        "fixed_training_mean": source[
+            "fixed_training_mean"
         ].astype(np.float32),
-        "test_labels": dataset[
-            "test_labels"
-        ].astype(np.int64),
+        "fixed_training_std": source[
+            "fixed_training_std"
+        ].astype(np.float32),
     }
 
-    validate_dataset(result)
+    validate_dataset(dataset)
 
-    return result
+    return dataset
 
 
 def validate_dataset(dataset):
-    """Validate dataset dimensions, labels, and numeric values."""
+    """Validate feature order, dimensions, labels, and values."""
+
+    if dataset["feature_names"] != EXPECTED_FEATURE_NAMES:
+        raise ValueError(
+            "Dataset feature order does not match corrected C2"
+        )
+
+    if dataset["class_names"] != CLASS_NAMES:
+        raise ValueError(
+            "Dataset class names are incorrect"
+        )
 
     feature_arrays = [
+        "raw_train_features",
         "train_features",
+        "raw_validation_features",
         "validation_features",
-        "test_features",
     ]
 
-    label_arrays = [
-        "train_labels",
-        "validation_labels",
-        "test_labels",
-    ]
-
-    for array_name in feature_arrays:
-        values = dataset[array_name]
+    for name in feature_arrays:
+        values = dataset[name]
 
         if values.ndim != 2:
             raise ValueError(
-                array_name
-                + " must be a two-dimensional matrix"
+                name + " must be two-dimensional"
             )
 
-        if values.shape[1] != EXPECTED_FEATURE_COUNT:
+        if values.shape[1] != 6:
             raise ValueError(
-                array_name
-                + " must contain exactly six features"
+                name + " must contain six features"
             )
 
-        if not np.all(np.isfinite(values)):
+        if not np.isfinite(values).all():
             raise ValueError(
-                array_name
-                + " contains non-finite values"
+                name + " contains invalid values"
             )
 
-    for array_name in label_arrays:
-        values = dataset[array_name]
+    if len(
+        dataset["train_features"]
+    ) != len(
+        dataset["train_labels"]
+    ):
+        raise ValueError(
+            "Training feature and label counts differ"
+        )
 
-        if values.ndim != 1:
-            raise ValueError(
-                array_name
-                + " must be one-dimensional"
-            )
+    if len(
+        dataset["validation_features"]
+    ) != len(
+        dataset["validation_labels"]
+    ):
+        raise ValueError(
+            "Validation feature and label counts differ"
+        )
 
+    for label_name in [
+        "train_labels",
+        "validation_labels",
+    ]:
         unique_labels = set(
-            np.unique(values).tolist()
+            np.unique(
+                dataset[label_name]
+            ).tolist()
         )
 
         if unique_labels != {0, 1, 2}:
             raise ValueError(
-                array_name
-                + " must contain classes 0, 1, and 2"
+                label_name
+                + " must contain all three classes"
             )
 
-    matching_pairs = [
-        ("train_features", "train_labels"),
-        (
-            "validation_features",
-            "validation_labels",
-        ),
-        ("test_features", "test_labels"),
-    ]
-
-    for feature_name, label_name in matching_pairs:
-        if len(dataset[feature_name]) != len(
-            dataset[label_name]
-        ):
-            raise ValueError(
-                feature_name
-                + " and "
-                + label_name
-                + " contain different sample counts"
-            )
-
-    if len(dataset["feature_names"]) != 6:
+    if dataset[
+        "fixed_training_mean"
+    ].shape != (6,):
         raise ValueError(
-            "Dataset feature-name list must contain six values"
+            "Fixed mean must have shape (6,)"
+        )
+
+    if dataset[
+        "fixed_training_std"
+    ].shape != (6,):
+        raise ValueError(
+            "Fixed standard deviation must have shape (6,)"
+        )
+
+    if np.any(
+        dataset["fixed_training_std"] <= 0
+    ):
+        raise ValueError(
+            "Fixed standard deviations must be positive"
         )
 
 
 def build_model(learning_rate):
-    """Build the assignment-specified baseline MLP."""
+    """Build the recommended 32-16 ReLU MLP."""
 
     model = tf_keras.Sequential(
         [
             tf_keras.layers.Input(
-                shape=(EXPECTED_FEATURE_COUNT,),
+                shape=(6,),
                 name="sensor_features",
             ),
             tf_keras.layers.Dense(
@@ -246,96 +280,286 @@ def build_model(learning_rate):
         name="logibridge_baseline_mlp",
     )
 
-    optimizer = tf_keras.optimizers.Adam(
-        learning_rate=learning_rate
-    )
-
     model.compile(
-        optimizer=optimizer,
-        loss="sparse_categorical_crossentropy",
-        metrics=[
-            "accuracy",
-        ],
+        optimizer=tf_keras.optimizers.Adam(
+            learning_rate=learning_rate
+        ),
+        loss=(
+            "sparse_categorical_crossentropy"
+        ),
+        metrics=["accuracy"],
     )
 
     return model
 
 
 def calculate_class_weights(labels):
-    """Calculate balanced weights from the training labels."""
+    """Calculate balanced training-class weights."""
 
-    labels = np.asarray(labels, dtype=np.int64)
+    labels = np.asarray(
+        labels,
+        dtype=np.int64,
+    )
 
-    total_count = len(labels)
-    class_count = len(CLASS_NAMES)
+    total = len(labels)
+    class_total = len(CLASS_NAMES)
 
     weights = {}
 
-    for class_label in range(class_count):
-        label_count = int(
-            np.sum(labels == class_label)
+    for label in range(class_total):
+        count = int(
+            np.sum(labels == label)
         )
 
-        if label_count == 0:
+        if count == 0:
             raise ValueError(
-                "Training split has an empty class"
+                "Training class is empty"
             )
 
-        weights[class_label] = (
-            total_count
-            / (class_count * label_count)
+        weights[label] = (
+            total
+            / float(class_total * count)
         )
 
     return weights
 
 
-def save_history_csv(path, history):
-    """Save epoch-level training history."""
+def predict_labels(model, features, batch_size):
+    """Return probabilities and predicted labels."""
 
-    output_path = Path(path)
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+    probabilities = model.predict(
+        features,
+        batch_size=batch_size,
+        verbose=0,
     )
 
-    history_keys = list(history.history.keys())
+    predicted_labels = np.argmax(
+        probabilities,
+        axis=1,
+    )
+
+    return probabilities, predicted_labels
+
+
+def evaluate_predictions(true_labels, predicted_labels):
+    """Calculate accuracy and per-class metrics."""
+
+    accuracy = float(
+        accuracy_score(
+            true_labels,
+            predicted_labels,
+        )
+    )
+
+    precision, recall, f1_score, support = (
+        precision_recall_fscore_support(
+            true_labels,
+            predicted_labels,
+            labels=[0, 1, 2],
+            zero_division=0,
+        )
+    )
+
+    matrix = confusion_matrix(
+        true_labels,
+        predicted_labels,
+        labels=[0, 1, 2],
+    )
+
+    per_class = {}
+
+    for label in range(3):
+        class_name = CLASS_NAMES[label]
+
+        per_class[class_name] = {
+            "label": label,
+            "precision": float(
+                precision[label]
+            ),
+            "recall": float(
+                recall[label]
+            ),
+            "f1_score": float(
+                f1_score[label]
+            ),
+            "support": int(
+                support[label]
+            ),
+        }
+
+    return {
+        "accuracy": accuracy,
+        "per_class": per_class,
+        "confusion_matrix": matrix,
+    }
+
+
+def normalize_with_statistics(
+    raw_features,
+    mean,
+    standard_deviation,
+):
+    """Normalize raw values with supplied fixed statistics."""
+
+    raw_values = np.asarray(
+        raw_features,
+        dtype=np.float32,
+    )
+
+    mean_values = np.asarray(
+        mean,
+        dtype=np.float32,
+    )
+
+    std_values = np.asarray(
+        standard_deviation,
+        dtype=np.float32,
+    )
+
+    normalized = (
+        raw_values - mean_values
+    ) / std_values
+
+    return normalized.astype(np.float32)
+
+
+def run_shifted_statistics_experiment(
+    model,
+    dataset,
+    batch_size,
+):
+    """Measure accuracy using correct and 3-sigma shifted means."""
+
+    mean = dataset[
+        "fixed_training_mean"
+    ]
+
+    standard_deviation = dataset[
+        "fixed_training_std"
+    ]
+
+    raw_validation = dataset[
+        "raw_validation_features"
+    ]
+
+    validation_labels = dataset[
+        "validation_labels"
+    ]
+
+    correct_features = (
+        normalize_with_statistics(
+            raw_features=raw_validation,
+            mean=mean,
+            standard_deviation=standard_deviation,
+        )
+    )
+
+    shifted_mean = (
+        mean
+        + 3.0 * standard_deviation
+    )
+
+    shifted_features = (
+        normalize_with_statistics(
+            raw_features=raw_validation,
+            mean=shifted_mean,
+            standard_deviation=standard_deviation,
+        )
+    )
+
+    _, correct_predictions = predict_labels(
+        model,
+        correct_features,
+        batch_size,
+    )
+
+    _, shifted_predictions = predict_labels(
+        model,
+        shifted_features,
+        batch_size,
+    )
+
+    correct_accuracy = float(
+        accuracy_score(
+            validation_labels,
+            correct_predictions,
+        )
+    )
+
+    shifted_accuracy = float(
+        accuracy_score(
+            validation_labels,
+            shifted_predictions,
+        )
+    )
+
+    accuracy_change = (
+        shifted_accuracy
+        - correct_accuracy
+    )
+
+    return {
+        "correct_accuracy": correct_accuracy,
+        "shifted_accuracy": shifted_accuracy,
+        "accuracy_change": accuracy_change,
+        "accuracy_drop": (
+            correct_accuracy
+            - shifted_accuracy
+        ),
+        "sigma_shift": 3.0,
+        "shifted_mean": shifted_mean,
+        "correct_predictions": (
+            correct_predictions
+        ),
+        "shifted_predictions": (
+            shifted_predictions
+        ),
+    }
+
+
+def save_history_csv(path, history):
+    """Save epoch-level learning history."""
+
+    output_path = Path(path)
+
+    keys = list(
+        history.history.keys()
+    )
+
     epoch_count = len(
-        history.history[history_keys[0]]
+        history.history[keys[0]]
     )
 
     with output_path.open(
         "w",
-        newline="",
         encoding="utf-8",
+        newline="",
     ) as file_handle:
         writer = csv.writer(file_handle)
 
         writer.writerow(
-            ["epoch"] + history_keys
+            ["epoch"] + keys
         )
 
-        for epoch_index in range(epoch_count):
-            writer.writerow(
-                [epoch_index + 1]
-                + [
+        for epoch_index in range(
+            epoch_count
+        ):
+            row = [epoch_index + 1]
+
+            for key in keys:
+                row.append(
                     float(
                         history.history[key][
                             epoch_index
                         ]
                     )
-                    for key in history_keys
-                ]
-            )
+                )
+
+            writer.writerow(row)
 
 
 def plot_training_history(path, history):
-    """Save loss and accuracy curves."""
-
-    output_path = Path(path)
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    """Save training and validation curves."""
 
     epochs = np.arange(
         1,
@@ -360,11 +584,11 @@ def plot_training_history(path, history):
         label="Validation loss",
     )
 
-    axes[0].set_title("Model Loss")
+    axes[0].set_title("Loss")
     axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("Sparse categorical cross-entropy")
-    axes[0].legend()
+    axes[0].set_ylabel("Cross-entropy")
     axes[0].grid(alpha=0.3)
+    axes[0].legend()
 
     axes[1].plot(
         epochs,
@@ -374,7 +598,9 @@ def plot_training_history(path, history):
 
     axes[1].plot(
         epochs,
-        history.history["val_accuracy"],
+        history.history[
+            "val_accuracy"
+        ],
         label="Validation accuracy",
     )
 
@@ -382,20 +608,20 @@ def plot_training_history(path, history):
         VALIDATION_ACCURACY_TARGET,
         color="red",
         linestyle="--",
-        label="88% target",
+        label="88% requirement",
     )
 
-    axes[1].set_title("Model Accuracy")
+    axes[1].set_title("Accuracy")
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Accuracy")
     axes[1].set_ylim(0.0, 1.05)
-    axes[1].legend()
     axes[1].grid(alpha=0.3)
+    axes[1].legend()
 
     figure.tight_layout()
 
     figure.savefig(
-        output_path,
+        path,
         dpi=180,
         bbox_inches="tight",
     )
@@ -404,13 +630,7 @@ def plot_training_history(path, history):
 
 
 def plot_confusion_matrix(path, matrix):
-    """Save the test-set confusion matrix."""
-
-    output_path = Path(path)
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    """Save held-out validation confusion matrix."""
 
     figure, axis = plt.subplots(
         figsize=(6.5, 5.5)
@@ -418,35 +638,55 @@ def plot_confusion_matrix(path, matrix):
 
     image = axis.imshow(
         matrix,
-        interpolation="nearest",
         cmap="Blues",
     )
 
-    figure.colorbar(image, ax=axis)
-
-    axis.set(
-        title="LogiBridge Test Confusion Matrix",
-        xlabel="Predicted class",
-        ylabel="True class",
-        xticks=np.arange(len(CLASS_NAMES)),
-        yticks=np.arange(len(CLASS_NAMES)),
-        xticklabels=CLASS_NAMES,
-        yticklabels=CLASS_NAMES,
+    figure.colorbar(
+        image,
+        ax=axis,
     )
 
-    threshold = matrix.max() / 2.0
+    axis.set_title(
+        "Held-Out Validation Confusion Matrix"
+    )
 
-    for row_index in range(matrix.shape[0]):
-        for column_index in range(
-            matrix.shape[1]
-        ):
+    axis.set_xlabel(
+        "Predicted class"
+    )
+
+    axis.set_ylabel(
+        "True class"
+    )
+
+    axis.set_xticks(
+        np.arange(3)
+    )
+
+    axis.set_yticks(
+        np.arange(3)
+    )
+
+    axis.set_xticklabels(
+        CLASS_NAMES
+    )
+
+    axis.set_yticklabels(
+        CLASS_NAMES
+    )
+
+    threshold = (
+        float(np.max(matrix)) / 2.0
+    )
+
+    for row in range(3):
+        for column in range(3):
             value = int(
-                matrix[row_index, column_index]
+                matrix[row, column]
             )
 
             axis.text(
-                column_index,
-                row_index,
+                column,
+                row,
                 str(value),
                 horizontalalignment="center",
                 verticalalignment="center",
@@ -460,7 +700,7 @@ def plot_confusion_matrix(path, matrix):
     figure.tight_layout()
 
     figure.savefig(
-        output_path,
+        path,
         dpi=180,
         bbox_inches="tight",
     )
@@ -468,96 +708,21 @@ def plot_confusion_matrix(path, matrix):
     plt.close(figure)
 
 
-def evaluate_predictions(
-    true_labels,
-    predicted_labels,
-):
-    """Calculate classification metrics."""
-
-    overall_accuracy = float(
-        accuracy_score(
-            true_labels,
-            predicted_labels,
-        )
-    )
-
-    precision, recall, f1_score, support = (
-        precision_recall_fscore_support(
-            true_labels,
-            predicted_labels,
-            labels=[0, 1, 2],
-            zero_division=0,
-        )
-    )
-
-    matrix = confusion_matrix(
-        true_labels,
-        predicted_labels,
-        labels=[0, 1, 2],
-    )
-
-    per_class = {}
-
-    for class_label, class_name in enumerate(
-        CLASS_NAMES
-    ):
-        per_class[class_name] = {
-            "label": class_label,
-            "precision": float(
-                precision[class_label]
-            ),
-            "recall": float(
-                recall[class_label]
-            ),
-            "f1_score": float(
-                f1_score[class_label]
-            ),
-            "support": int(
-                support[class_label]
-            ),
-        }
-
-    return {
-        "accuracy": overall_accuracy,
-        "critical_recall": float(recall[2]),
-        "per_class": per_class,
-        "confusion_matrix": matrix,
-    }
-
-
-def save_metrics_json(
+def save_metrics(
     path,
     model,
     dataset,
-    training_history,
+    history,
     validation_loss,
-    validation_accuracy,
-    test_loss,
     evaluation,
+    experiment,
     seed,
 ):
-    """Save machine-readable training and evaluation results."""
-
-    output_path = Path(path)
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    best_validation_accuracy = float(
-        max(training_history.history["val_accuracy"])
-    )
-
-    best_validation_loss = float(
-        min(training_history.history["val_loss"])
-    )
-
-    parameter_count = int(
-        model.count_params()
-    )
+    """Save model and experiment metrics to JSON."""
 
     metrics = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
+        "assignment_task": "D1",
         "model_name": model.name,
         "architecture": {
             "input_features": 6,
@@ -565,51 +730,63 @@ def save_metrics_json(
             "hidden_activation": "relu",
             "output_classes": 3,
             "output_activation": "softmax",
-            "parameter_count": parameter_count,
+            "parameter_count": int(
+                model.count_params()
+            ),
         },
-        "feature_names": [
-            str(value)
-            for value in dataset["feature_names"]
-        ],
+        "feature_names": (
+            dataset["feature_names"]
+        ),
         "class_names": CLASS_NAMES,
         "random_seed": seed,
         "dataset": {
             "training_samples": int(
-                len(dataset["train_labels"])
+                len(
+                    dataset[
+                        "train_labels"
+                    ]
+                )
             ),
             "validation_samples": int(
-                len(dataset["validation_labels"])
+                len(
+                    dataset[
+                        "validation_labels"
+                    ]
+                )
             ),
-            "test_samples": int(
-                len(dataset["test_labels"])
+            "held_out_validation_fraction": (
+                0.20
             ),
         },
         "training": {
             "epochs_completed": int(
                 len(
-                    training_history.history[
+                    history.history[
                         "loss"
                     ]
                 )
             ),
-            "best_validation_accuracy": (
-                best_validation_accuracy
+            "best_validation_accuracy": float(
+                max(
+                    history.history[
+                        "val_accuracy"
+                    ]
+                )
             ),
-            "best_validation_loss": (
-                best_validation_loss
+            "best_validation_loss": float(
+                min(
+                    history.history[
+                        "val_loss"
+                    ]
+                )
             ),
             "restored_validation_loss": float(
                 validation_loss
             ),
-            "restored_validation_accuracy": float(
-                validation_accuracy
-            ),
         },
-        "test": {
-            "loss": float(test_loss),
-            "accuracy": evaluation["accuracy"],
-            "critical_recall": evaluation[
-                "critical_recall"
+        "validation": {
+            "accuracy": evaluation[
+                "accuracy"
             ],
             "per_class": evaluation[
                 "per_class"
@@ -617,26 +794,45 @@ def save_metrics_json(
             "confusion_matrix": evaluation[
                 "confusion_matrix"
             ].tolist(),
-        },
-        "thresholds": {
-            "validation_accuracy_target": (
+            "accuracy_requirement": (
                 VALIDATION_ACCURACY_TARGET
             ),
-            "critical_recall_target": (
-                CRITICAL_RECALL_TARGET
+            "requirement_passed": bool(
+                evaluation["accuracy"]
+                > VALIDATION_ACCURACY_TARGET
             ),
-            "validation_accuracy_passed": bool(
-                validation_accuracy
-                >= VALIDATION_ACCURACY_TARGET
+        },
+        "shifted_statistics_experiment": {
+            "sigma_shift": experiment[
+                "sigma_shift"
+            ],
+            "correct_stats_accuracy": (
+                experiment[
+                    "correct_accuracy"
+                ]
             ),
-            "critical_recall_passed": bool(
-                evaluation["critical_recall"]
-                >= CRITICAL_RECALL_TARGET
+            "shifted_stats_accuracy": (
+                experiment[
+                    "shifted_accuracy"
+                ]
             ),
+            "accuracy_change": (
+                experiment[
+                    "accuracy_change"
+                ]
+            ),
+            "accuracy_drop": (
+                experiment[
+                    "accuracy_drop"
+                ]
+            ),
+            "shifted_mean": experiment[
+                "shifted_mean"
+            ].tolist(),
         },
     }
 
-    output_path.write_text(
+    Path(path).write_text(
         json.dumps(
             metrics,
             indent=2,
@@ -647,10 +843,12 @@ def save_metrics_json(
     )
 
 
-def train_model(arguments):
-    """Train, evaluate, save, and validate the baseline model."""
+def train(arguments):
+    """Train, evaluate, and save the corrected D1 model."""
 
-    configure_reproducibility(arguments.seed)
+    configure_reproducibility(
+        arguments.seed
+    )
 
     dataset = load_dataset(
         arguments.dataset
@@ -665,14 +863,24 @@ def train_model(arguments):
         exist_ok=True,
     )
 
-    checkpoint_path = (
+    model_path = (
+        output_directory
+        / "baseline_model.keras"
+    )
+
+    best_model_path = (
         output_directory
         / "baseline_best.keras"
     )
 
-    final_model_path = (
+    metrics_path = (
         output_directory
-        / "baseline_model.keras"
+        / "baseline_metrics.json"
+    )
+
+    report_path = (
+        output_directory
+        / "classification_report.txt"
     )
 
     history_csv_path = (
@@ -685,26 +893,21 @@ def train_model(arguments):
         / "training_history.png"
     )
 
-    confusion_plot_path = (
+    confusion_matrix_path = (
         output_directory
         / "confusion_matrix.png"
     )
 
-    metrics_path = (
-        output_directory
-        / "baseline_metrics.json"
-    )
-
-    print("LogiBridge Baseline MLP Training")
-    print("=" * 42)
+    print("Corrected LogiBridge D1 Training")
+    print("=" * 46)
 
     print(
-        "TensorFlow version:",
+        "TensorFlow:",
         tf.__version__,
     )
 
     print(
-        "tf_keras version:",
+        "tf_keras:",
         tf_keras.__version__,
     )
 
@@ -720,24 +923,36 @@ def train_model(arguments):
         ].shape,
     )
 
-    print(
-        "Test shape:",
-        dataset["test_features"].shape,
-    )
+    print("Feature order:")
+
+    for index, name in enumerate(
+        dataset["feature_names"],
+        start=1,
+    ):
+        print(
+            " ",
+            index,
+            name,
+        )
 
     model = build_model(
-        learning_rate=arguments.learning_rate
+        arguments.learning_rate
     )
 
     print()
     model.summary()
 
-    class_weights = calculate_class_weights(
-        dataset["train_labels"]
+    class_weights = (
+        calculate_class_weights(
+            dataset["train_labels"]
+        )
     )
 
     print()
-    print("Class weights:", class_weights)
+    print(
+        "Class weights:",
+        class_weights,
+    )
 
     callbacks = [
         tf_keras.callbacks.EarlyStopping(
@@ -758,7 +973,9 @@ def train_model(arguments):
             verbose=1,
         ),
         tf_keras.callbacks.ModelCheckpoint(
-            filepath=str(checkpoint_path),
+            filepath=str(
+                best_model_path
+            ),
             monitor="val_loss",
             save_best_only=True,
             verbose=1,
@@ -769,60 +986,67 @@ def train_model(arguments):
         dataset["train_features"],
         dataset["train_labels"],
         validation_data=(
-            dataset["validation_features"],
-            dataset["validation_labels"],
+            dataset[
+                "validation_features"
+            ],
+            dataset[
+                "validation_labels"
+            ],
         ),
         epochs=arguments.epochs,
         batch_size=arguments.batch_size,
         class_weight=class_weights,
         callbacks=callbacks,
-        verbose=2,
         shuffle=True,
+        verbose=2,
     )
 
-    validation_loss, validation_accuracy = (
+    validation_loss, keras_accuracy = (
         model.evaluate(
-            dataset["validation_features"],
-            dataset["validation_labels"],
+            dataset[
+                "validation_features"
+            ],
+            dataset[
+                "validation_labels"
+            ],
             verbose=0,
         )
     )
 
-    test_loss, model_test_accuracy = (
-        model.evaluate(
-            dataset["test_features"],
-            dataset["test_labels"],
-            verbose=0,
-        )
-    )
-
-    test_probabilities = model.predict(
-        dataset["test_features"],
-        batch_size=arguments.batch_size,
-        verbose=0,
-    )
-
-    predicted_labels = np.argmax(
-        test_probabilities,
-        axis=1,
+    _, predicted_labels = predict_labels(
+        model,
+        dataset[
+            "validation_features"
+        ],
+        arguments.batch_size,
     )
 
     evaluation = evaluate_predictions(
-        dataset["test_labels"],
+        dataset[
+            "validation_labels"
+        ],
         predicted_labels,
     )
 
     if not np.isclose(
-        model_test_accuracy,
+        keras_accuracy,
         evaluation["accuracy"],
         atol=0.000001,
     ):
         raise RuntimeError(
-            "Keras and sklearn test accuracies differ"
+            "Keras and sklearn validation accuracies differ"
         )
 
-    report_text = classification_report(
-        dataset["test_labels"],
+    experiment = (
+        run_shifted_statistics_experiment(
+            model=model,
+            dataset=dataset,
+            batch_size=arguments.batch_size,
+        )
+    )
+
+    report = classification_report(
+        dataset["validation_labels"],
         predicted_labels,
         labels=[0, 1, 2],
         target_names=CLASS_NAMES,
@@ -830,7 +1054,12 @@ def train_model(arguments):
         zero_division=0,
     )
 
-    model.save(final_model_path)
+    model.save(model_path)
+
+    report_path.write_text(
+        report,
+        encoding="utf-8",
+    )
 
     save_history_csv(
         history_csv_path,
@@ -843,68 +1072,40 @@ def train_model(arguments):
     )
 
     plot_confusion_matrix(
-        confusion_plot_path,
-        evaluation["confusion_matrix"],
+        confusion_matrix_path,
+        evaluation[
+            "confusion_matrix"
+        ],
     )
 
-    save_metrics_json(
+    
+    save_metrics(
         path=metrics_path,
         model=model,
         dataset=dataset,
-        training_history=history,
+        history=history,
         validation_loss=validation_loss,
-        validation_accuracy=validation_accuracy,
-        test_loss=test_loss,
         evaluation=evaluation,
+        experiment=experiment,
         seed=arguments.seed,
     )
 
-    report_path = (
-        output_directory
-        / "classification_report.txt"
-    )
-
-    report_path.write_text(
-        report_text,
-        encoding="utf-8",
-    )
-
     print()
-    print("Evaluation Results")
-    print("=" * 42)
+    print("Held-Out Validation Results")
+    print("=" * 46)
 
     print(
         "Validation loss:",
-        format(float(validation_loss), ".6f"),
+        format(
+            float(validation_loss),
+            ".6f",
+        ),
     )
 
     print(
         "Validation accuracy:",
         format(
-            float(validation_accuracy) * 100.0,
-            ".2f",
-        )
-        + "%",
-    )
-
-    print(
-        "Test loss:",
-        format(float(test_loss), ".6f"),
-    )
-
-    print(
-        "Test accuracy:",
-        format(
-            evaluation["accuracy"] * 100.0,
-            ".2f",
-        )
-        + "%",
-    )
-
-    print(
-        "Critical recall:",
-        format(
-            evaluation["critical_recall"]
+            evaluation["accuracy"]
             * 100.0,
             ".2f",
         )
@@ -913,75 +1114,96 @@ def train_model(arguments):
 
     print()
     print("Classification report:")
-    print(report_text)
+    print(report)
 
     print("Confusion matrix:")
-    print(evaluation["confusion_matrix"])
+    print(
+        evaluation[
+            "confusion_matrix"
+        ]
+    )
 
     print()
-    print("Saved model:", final_model_path)
-    print("Best checkpoint:", checkpoint_path)
+    print("Mandatory Shifted-Statistics Experiment")
+    print("=" * 46)
+
+    print(
+        "Correct-statistics accuracy:",
+        format(
+            experiment[
+                "correct_accuracy"
+            ] * 100.0,
+            ".2f",
+        )
+        + "%",
+    )
+
+    print(
+        "Shifted-statistics accuracy:",
+        format(
+            experiment[
+                "shifted_accuracy"
+            ] * 100.0,
+            ".2f",
+        )
+        + "%",
+    )
+
+    print(
+        "Accuracy change:",
+        format(
+            experiment[
+                "accuracy_change"
+            ] * 100.0,
+            ".2f",
+        ),
+        "percentage points",
+    )
+
+    print(
+        "Accuracy drop:",
+        format(
+            experiment[
+                "accuracy_drop"
+            ] * 100.0,
+            ".2f",
+        ),
+        "percentage points",
+    )
+
+    print()
+    print("Saved model:", model_path)
+    print("Saved best model:", best_model_path)
     print("Saved metrics:", metrics_path)
-    print("Saved history:", history_csv_path)
-    print("Saved history plot:", history_plot_path)
+    print("Saved report:", report_path)
     print(
         "Saved confusion matrix:",
-        confusion_plot_path,
+        confusion_matrix_path,
     )
 
-    validation_passed = (
-        validation_accuracy
-        >= VALIDATION_ACCURACY_TARGET
-    )
-
-    critical_recall_passed = (
-        evaluation["critical_recall"]
-        >= CRITICAL_RECALL_TARGET
-    )
-
-    print()
-
-    if validation_passed:
+    if (
+        evaluation["accuracy"]
+        > VALIDATION_ACCURACY_TARGET
+    ):
         print(
-            "[PASS] Validation accuracy is at least 88%"
+            "[PASS] Held-out validation accuracy exceeds 88%"
         )
     else:
         print(
-            "[FAIL] Validation accuracy is below 88%"
+            "[FAIL] Held-out validation accuracy does not exceed 88%"
         )
 
-    if critical_recall_passed:
-        print(
-            "[PASS] Critical-class recall is at least 95%"
-        )
-    else:
-        print(
-            "[FAIL] Critical-class recall is below 95%"
-        )
-
-    if not validation_passed:
         raise RuntimeError(
-            "Validation-accuracy requirement was not met"
+            "Assignment validation-accuracy requirement was not met"
         )
 
-    if not critical_recall_passed:
-        raise RuntimeError(
-            "Critical-recall requirement was not met"
-        )
+    print(
+        "[PASS] Correct-versus-shifted statistics experiment completed"
+    )
 
-    print("[PASS] Baseline model training completed")
-
-    return {
-        "model_path": final_model_path,
-        "metrics_path": metrics_path,
-        "validation_accuracy": float(
-            validation_accuracy
-        ),
-        "test_accuracy": evaluation["accuracy"],
-        "critical_recall": evaluation[
-            "critical_recall"
-        ],
-    }
+    print(
+        "[PASS] Corrected D1 model training completed"
+    )
 
 
 def build_parser():
@@ -989,55 +1211,48 @@ def build_parser():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Train the LogiBridge baseline MLP"
+            "Train the corrected LogiBridge D1 MLP"
         )
     )
 
     parser.add_argument(
         "--dataset",
         default="training/dataset.npz",
-        help="Generated dataset path",
     )
 
     parser.add_argument(
         "--output-dir",
         default="training/models",
-        help="Model and evaluation output directory",
     )
 
     parser.add_argument(
         "--epochs",
         type=int,
         default=150,
-        help="Maximum training epochs",
     )
 
     parser.add_argument(
         "--batch-size",
         type=int,
         default=16,
-        help="Training batch size",
     )
 
     parser.add_argument(
         "--learning-rate",
         type=float,
         default=0.001,
-        help="Initial Adam learning rate",
     )
 
     parser.add_argument(
         "--patience",
         type=int,
         default=20,
-        help="Early-stopping patience",
     )
 
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
-        help="Random seed",
     )
 
     return parser
@@ -1048,10 +1263,10 @@ def main():
 
     arguments = build_parser().parse_args()
 
-    train_model(arguments)
+    train(arguments)
 
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

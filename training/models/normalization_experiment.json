@@ -1,0 +1,12 @@
+{
+  "accuracy_change": 0.0,
+  "changed_predicted_labels": 0,
+  "correct_accuracy": 1.0,
+  "correct_cross_entropy_loss": 0.0002814385516103357,
+  "correct_mean_confidence": 0.9997190237045288,
+  "mean_absolute_probability_change": 0.00018767981964629143,
+  "shifted_accuracy": 1.0,
+  "shifted_cross_entropy_loss": 9.993615321945981e-07,
+  "shifted_mean_confidence": 0.9999992251396179,
+  "validation_samples": 60
+}
