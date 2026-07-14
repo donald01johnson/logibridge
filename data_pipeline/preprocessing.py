@@ -21,9 +21,20 @@ Assignment Task C2 requirements:
 
 import argparse
 import logging
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(
+        0,
+        str(PROJECT_ROOT),
+    )
+
 
 import numpy as np
 
@@ -47,16 +58,23 @@ FEATURE_NAMES = [
 
 @dataclass
 class SensorSample:
-    """One synchronized temperature, vibration, and door observation."""
+    """One synchronized sensor observation.
+
+    vibration_updated is True only when a new 0.5 Hz vibration
+    measurement is available. On intermediate 1 Hz cycles, the latest
+    vibration value may be carried forward, but it must not be inserted
+    into the five-sample vibration filter again.
+    """
 
     timestamp: float
     temperature_c: float
     vibration_rms_g: float
     door_state: str = "CLOSE"
+    vibration_updated: bool = True
 
 
 class MovingAverageFilter:
-    """Five-sample moving-average filter for numeric streams."""
+    """Independent five-sample filters for temperature and vibration."""
 
     def __init__(self, size=MOVING_AVERAGE_SIZE):
         if size <= 0:
@@ -65,29 +83,73 @@ class MovingAverageFilter:
             )
 
         self.size = size
-        self.temperature_values = deque(maxlen=size)
-        self.vibration_values = deque(maxlen=size)
+
+        self.temperature_values = deque(
+            maxlen=size
+        )
+
+        self.vibration_values = deque(
+            maxlen=size
+        )
+
+        self.latest_filtered_vibration = None
 
     def update(self, sample):
-        """Filter one synchronized sample."""
+        """Filter one synchronized sensor observation.
+
+        Temperature is updated for every 1 Hz sample.
+
+        Vibration is updated only when vibration_updated is True,
+        corresponding to a new 0.5 Hz vibration observation.
+        """
 
         self.temperature_values.append(
             float(sample.temperature_c)
         )
 
-        self.vibration_values.append(
-            float(sample.vibration_rms_g)
+        filtered_temperature = float(
+            np.mean(
+                self.temperature_values
+            )
         )
 
+        if (
+            sample.vibration_updated
+            or not self.vibration_values
+        ):
+            self.vibration_values.append(
+                float(
+                    sample.vibration_rms_g
+                )
+            )
+
+            self.latest_filtered_vibration = float(
+                np.mean(
+                    self.vibration_values
+                )
+            )
+
+        if self.latest_filtered_vibration is None:
+            raise RuntimeError(
+                "No vibration value is available"
+            )
+
         return SensorSample(
-            timestamp=float(sample.timestamp),
-            temperature_c=float(
-                np.mean(self.temperature_values)
+            timestamp=float(
+                sample.timestamp
             ),
-            vibration_rms_g=float(
-                np.mean(self.vibration_values)
+            temperature_c=(
+                filtered_temperature
             ),
-            door_state=str(sample.door_state).upper(),
+            vibration_rms_g=(
+                self.latest_filtered_vibration
+            ),
+            door_state=str(
+                sample.door_state
+            ).upper(),
+            vibration_updated=bool(
+                sample.vibration_updated
+            ),
         )
 
 
@@ -163,41 +225,90 @@ def calculate_kurtosis(values):
     )
 
 
+
 def extract_features(samples):
-    """Extract and concatenate temperature and vibration features."""
+    """Extract and concatenate the exact six C2 features.
+
+    Temperature features are calculated from filtered 1 Hz temperature
+    observations.
+
+    Vibration features are calculated only from filtered observations for
+    which vibration_updated is True, preserving the original 0.5 Hz
+    vibration stream.
+    """
 
     if len(samples) < 2:
         raise ValueError(
             "At least two filtered samples are required"
         )
 
-    timestamps = np.asarray(
-        [sample.timestamp for sample in samples],
+    temperature_samples = list(
+        samples
+    )
+
+    vibration_samples = [
+        sample
+        for sample in samples
+        if sample.vibration_updated
+    ]
+
+    if len(vibration_samples) < 2:
+        raise ValueError(
+            "At least two genuine vibration samples "
+            "are required"
+        )
+
+    temperature_timestamps = np.asarray(
+        [
+            sample.timestamp
+            for sample in temperature_samples
+        ],
         dtype=np.float64,
     )
 
     temperatures = np.asarray(
-        [sample.temperature_c for sample in samples],
+        [
+            sample.temperature_c
+            for sample in temperature_samples
+        ],
         dtype=np.float64,
     )
 
     vibrations = np.asarray(
-        [sample.vibration_rms_g for sample in samples],
+        [
+            sample.vibration_rms_g
+            for sample in vibration_samples
+        ],
         dtype=np.float64,
     )
 
-    if not np.all(np.diff(timestamps) >= 0):
+    if not np.all(
+        np.diff(
+            temperature_timestamps
+        ) >= 0
+    ):
         raise ValueError(
             "Window timestamps must be non-decreasing"
         )
 
     temperature_features = np.asarray(
         [
-            np.mean(temperatures),
-            np.std(temperatures, ddof=0),
-            calculate_temperature_rate(
-                timestamps,
-                temperatures,
+            float(
+                np.mean(
+                    temperatures
+                )
+            ),
+            float(
+                np.std(
+                    temperatures,
+                    ddof=0,
+                )
+            ),
+            float(
+                calculate_temperature_rate(
+                    temperature_timestamps,
+                    temperatures,
+                )
             ),
         ],
         dtype=np.float32,
@@ -205,11 +316,25 @@ def extract_features(samples):
 
     vibration_features = np.asarray(
         [
-            np.sqrt(
-                np.mean(vibrations ** 2)
+            float(
+                np.sqrt(
+                    np.mean(
+                        vibrations ** 2
+                    )
+                )
             ),
-            np.max(np.abs(vibrations)),
-            calculate_kurtosis(vibrations),
+            float(
+                np.max(
+                    np.abs(
+                        vibrations
+                    )
+                )
+            ),
+            float(
+                calculate_kurtosis(
+                    vibrations
+                )
+            ),
         ],
         dtype=np.float32,
     )
@@ -218,7 +343,8 @@ def extract_features(samples):
         [
             temperature_features,
             vibration_features,
-        ]
+        ],
+        axis=0,
     ).astype(np.float32)
 
     if fused_features.shape != (6,):
@@ -226,7 +352,11 @@ def extract_features(samples):
             "Feature vector must have shape (6,)"
         )
 
-    if not np.all(np.isfinite(fused_features)):
+    if not np.all(
+        np.isfinite(
+            fused_features
+        )
+    ):
         raise ValueError(
             "Feature vector contains non-finite values"
         )
@@ -567,44 +697,67 @@ def load_training_statistics(path):
     return statistics
 
 
+
 def generate_clean_normal_samples(
     duration_seconds=(
         NORMAL_STATISTICS_DURATION_SECONDS
     ),
     seed=42,
 ):
-    """Generate ten minutes of clean Normal-class output."""
+    """Generate clean Normal data through the shared C1 simulator.
 
-    generator = np.random.default_rng(seed)
+    This guarantees that training_stats.npy is produced from the same
+    simulator implementation used by C1 and D1.
+    """
+
+    from data_pipeline.simulator import (
+        generate_offline_samples,
+    )
+
+    raw_samples = generate_offline_samples(
+        anomaly="none",
+        duration_seconds=(
+            duration_seconds
+        ),
+        seed=seed,
+    )
 
     samples = []
 
-    for second in range(
-        int(duration_seconds) + 1
-    ):
-        temperature = float(
-            generator.normal(
-                loc=4.0,
-                scale=0.3,
-            )
+    for raw_sample in raw_samples:
+        timestamp = float(
+            raw_sample["timestamp"]
         )
 
-        vibration = max(
-            0.0,
-            float(
-                generator.normal(
-                    loc=0.45,
-                    scale=0.05,
-                )
-            ),
+        vibration_updated = bool(
+            raw_sample.get(
+                "vibration_updated",
+                int(timestamp) % 2 == 0,
+            )
         )
 
         samples.append(
             SensorSample(
-                timestamp=float(second),
-                temperature_c=temperature,
-                vibration_rms_g=vibration,
-                door_state="CLOSE",
+                timestamp=timestamp,
+                temperature_c=float(
+                    raw_sample[
+                        "temperature_c"
+                    ]
+                ),
+                vibration_rms_g=float(
+                    raw_sample[
+                        "vibration_rms_g"
+                    ]
+                ),
+                door_state=str(
+                    raw_sample.get(
+                        "door_state",
+                        "CLOSE",
+                    )
+                ),
+                vibration_updated=(
+                    vibration_updated
+                ),
             )
         )
 

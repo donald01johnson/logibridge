@@ -601,6 +601,9 @@ def generate_offline_samples(
                 "vibration_rms_g": (
                     latest_vibration
                 ),
+                "vibration_updated": (
+                    second % 2 == 0
+                ),
                 "door_state": door_state,
             }
         )

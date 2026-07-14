@@ -88,18 +88,31 @@ def generate_mode_samples(mode, duration_seconds, seed):
     for raw_sample in raw_samples:
         samples.append(
             SensorSample(
-                timestamp=raw_sample[
-                    "timestamp"
-                ],
-                temperature_c=raw_sample[
-                    "temperature_c"
-                ],
-                vibration_rms_g=raw_sample[
-                    "vibration_rms_g"
-                ],
-                door_state=raw_sample[
-                    "door_state"
-                ],
+                timestamp=float(
+                    raw_sample[
+                        "timestamp"
+                    ]
+                ),
+                temperature_c=float(
+                    raw_sample[
+                        "temperature_c"
+                    ]
+                ),
+                vibration_rms_g=float(
+                    raw_sample[
+                        "vibration_rms_g"
+                    ]
+                ),
+                door_state=str(
+                    raw_sample[
+                        "door_state"
+                    ]
+                ),
+                vibration_updated=bool(
+                    raw_sample[
+                        "vibration_updated"
+                    ]
+                ),
             )
         )
 
