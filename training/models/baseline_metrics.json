@@ -1,0 +1,92 @@
+{
+  "architecture": {
+    "hidden_activation": "relu",
+    "hidden_layers": [
+      32,
+      16
+    ],
+    "input_features": 6,
+    "output_activation": "softmax",
+    "output_classes": 3,
+    "parameter_count": 803
+  },
+  "class_names": [
+    "Normal",
+    "Warning",
+    "Critical"
+  ],
+  "dataset": {
+    "test_samples": 48,
+    "training_samples": 208,
+    "validation_samples": 44
+  },
+  "feature_names": [
+    "temperature_mean_c",
+    "temperature_max_c",
+    "vibration_mean_g",
+    "vibration_max_g",
+    "door_open_fraction",
+    "door_transition_count"
+  ],
+  "model_name": "logibridge_baseline_mlp",
+  "random_seed": 42,
+  "schema_version": "1.0",
+  "test": {
+    "accuracy": 1.0,
+    "confusion_matrix": [
+      [
+        18,
+        0,
+        0
+      ],
+      [
+        0,
+        15,
+        0
+      ],
+      [
+        0,
+        0,
+        15
+      ]
+    ],
+    "critical_recall": 1.0,
+    "loss": 0.00027912575751543045,
+    "per_class": {
+      "Critical": {
+        "f1_score": 1.0,
+        "label": 2,
+        "precision": 1.0,
+        "recall": 1.0,
+        "support": 15
+      },
+      "Normal": {
+        "f1_score": 1.0,
+        "label": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "support": 18
+      },
+      "Warning": {
+        "f1_score": 1.0,
+        "label": 1,
+        "precision": 1.0,
+        "recall": 1.0,
+        "support": 15
+      }
+    }
+  },
+  "thresholds": {
+    "critical_recall_passed": true,
+    "critical_recall_target": 0.95,
+    "validation_accuracy_passed": true,
+    "validation_accuracy_target": 0.88
+  },
+  "training": {
+    "best_validation_accuracy": 1.0,
+    "best_validation_loss": 0.00019045709632337093,
+    "epochs_completed": 150,
+    "restored_validation_accuracy": 1.0,
+    "restored_validation_loss": 0.0002082609134959057
+  }
+}
