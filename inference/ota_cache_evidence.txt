@@ -1,0 +1,43 @@
+LogiBridge D2 OTA Layer-Cache Demonstration
+===========================================
+
+Baseline model hash:
+12587fac0741870dce7e37f5dff71bb6b3af3cfbf050d3a26c90de32b73debf3  inference/model.tflite
+
+Updated model hash:
+2120decff253847f8ac3a4205cac430efc5775305316abb8afae50af1f81d334  inference/model.tflite
+
+Second-build cache evidence:
+Step 1/17 : FROM python:3.11-slim
+Step 2/17 : ENV PYTHONDONTWRITEBYTECODE=1
+ ---> Using cache
+Step 3/17 : ENV PYTHONUNBUFFERED=1
+ ---> Using cache
+Step 4/17 : ENV MODEL_PATH=/app/model.tflite
+ ---> Using cache
+Step 5/17 : ENV STATS_PATH=/app/training_stats.npy
+ ---> Using cache
+Step 6/17 : ENV MQTT_HOST=host.docker.internal
+ ---> Using cache
+Step 7/17 : ENV MQTT_PORT=1883
+ ---> Using cache
+Step 8/17 : ENV TRUCK_ID=TRUCK-001
+ ---> Using cache
+Step 9/17 : ENV MQTT_QOS=1
+ ---> Using cache
+Step 10/17 : WORKDIR /app
+ ---> Using cache
+Step 11/17 : COPY inference/requirements.txt ./requirements.txt
+ ---> Using cache
+Step 12/17 : RUN python -m pip install     --no-cache-dir     --upgrade pip     && python -m pip install     --no-cache-dir     -r requirements.txt
+ ---> Using cache
+Step 13/17 : COPY data_pipeline/preprocessing.py ./preprocessing.py
+ ---> Using cache
+Step 14/17 : COPY data_pipeline/training_stats.npy ./training_stats.npy
+ ---> Using cache
+Step 15/17 : COPY inference/inference_service.py ./inference_service.py
+ ---> Using cache
+Step 16/17 : COPY inference/model.tflite ./model.tflite
+Step 17/17 : CMD ["python", "inference_service.py"]
+Successfully built b73275718d9d
+Successfully tagged logibridge-inference:v2
