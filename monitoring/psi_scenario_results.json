@@ -1,0 +1,246 @@
+{
+  "drift_crossed_threshold": true,
+  "drift_events": [
+    {
+      "distribution": [
+        0.04,
+        0.0,
+        0.0,
+        0.96
+      ],
+      "logical_seconds": 60,
+      "psi": 0.4254867806850831
+    },
+    {
+      "distribution": [
+        0.1,
+        0.0,
+        0.0,
+        0.9
+      ],
+      "logical_seconds": 120,
+      "psi": 1.1618146561593414
+    },
+    {
+      "distribution": [
+        0.16,
+        0.0,
+        0.0,
+        0.84
+      ],
+      "logical_seconds": 180,
+      "psi": 1.9451491494494442
+    },
+    {
+      "distribution": [
+        0.22,
+        0.0,
+        0.0,
+        0.78
+      ],
+      "logical_seconds": 240,
+      "psi": 2.7609476488928233
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 300,
+      "psi": 3.6038736269718847
+    }
+  ],
+  "drift_score_count": 28,
+  "drift_threshold": 0.25,
+  "first_drift_cross_seconds": 60,
+  "first_recovery_seconds": 1020,
+  "initial_clean_distribution": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+  ],
+  "initial_clean_psi": 0.0,
+  "monitor_interval_seconds": 60,
+  "recovered_below_threshold": true,
+  "recovery_events": [
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 60,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 120,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 180,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 240,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 300,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 360,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 420,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 480,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 540,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 600,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 660,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.28,
+        0.0,
+        0.0,
+        0.72
+      ],
+      "logical_seconds": 720,
+      "psi": 3.6038736269718847
+    },
+    {
+      "distribution": [
+        0.24,
+        0.0,
+        0.0,
+        0.76
+      ],
+      "logical_seconds": 780,
+      "psi": 3.039060710586955
+    },
+    {
+      "distribution": [
+        0.18,
+        0.0,
+        0.0,
+        0.82
+      ],
+      "logical_seconds": 840,
+      "psi": 2.21383262553169
+    },
+    {
+      "distribution": [
+        0.12,
+        0.0,
+        0.0,
+        0.88
+      ],
+      "logical_seconds": 900,
+      "psi": 1.4187549866146003
+    },
+    {
+      "distribution": [
+        0.06,
+        0.0,
+        0.0,
+        0.94
+      ],
+      "logical_seconds": 960,
+      "psi": 0.6638261230790362
+    },
+    {
+      "distribution": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "logical_seconds": 1020,
+      "psi": 0.0
+    }
+  ],
+  "recovery_score_count": 100,
+  "recovery_threshold": 0.1,
+  "reference_window_count": 300,
+  "rolling_window_size": 100,
+  "schema_version": "1.0",
+  "score_definition": "probabilities[0], representing P(Normal)"
+}
