@@ -1,0 +1,27 @@
+LogiBridge E2 Ansible Deployment Evidence
+========================================
+
+Playbook task count:
+7
+
+Tasks:
+    - name: Create /opt/logibridge directory if not present
+    - name: Copy new model file to /opt/logibridge/model.tflite
+    - name: Copy updated reference_dist.json
+    - name: Stop the running inference container if running
+    - name: Pull updated container image from local Docker registry
+    - name: Start inference container with environment variables
+    - name: Wait 15 seconds and verify container is running
+
+Final first-run recap:
+PLAY RECAP *********************************************************************
+localhost                  : ok=6    changed=0    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0   
+
+
+Final second-run recap:
+PLAY RECAP *********************************************************************
+localhost                  : ok=6    changed=0    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0   
+
+
+Container state:
+Name=logibridge-inference Image=localhost:5000/logibridge-inference:v2 Status=Up 26 minutes

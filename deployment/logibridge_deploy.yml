@@ -1,4 +1,174 @@
 ---
-# LogiBridge edge deployment playbook
-# Assignment component: E2
-# Status: Pending implementation
+- name: Deploy LogiBridge inference service
+  hosts: edge_nodes
+  gather_facts: false
+  become: true
+
+  vars:
+    deployment_directory: /opt/logibridge
+    container_name: logibridge-inference
+    registry_image: localhost:5000/logibridge-inference:v2
+    truck_id: TRUCK-001
+    mqtt_client_id: logibridge-ansible-TRUCK-001
+
+  tasks:
+    - name: Create /opt/logibridge directory if not present
+      ansible.builtin.file:
+        path: "{{ deployment_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy new model file to /opt/logibridge/model.tflite
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../inference/model.tflite"
+        dest: "{{ deployment_directory }}/model.tflite"
+        owner: root
+        group: root
+        mode: "0644"
+      register: model_copy
+
+    - name: Copy updated reference_dist.json
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../monitoring/reference_dist.json"
+        dest: "{{ deployment_directory }}/reference_dist.json"
+        owner: root
+        group: root
+        mode: "0644"
+      register: reference_copy
+
+    - name: Stop the running inference container if running
+      ansible.builtin.shell: |
+        if docker container inspect "{{ container_name }}" >/dev/null 2>&1
+        then
+            running=$(
+                docker container inspect "{{ container_name }}" |
+                python3 -c '
+        import json
+        import sys
+        print(json.load(sys.stdin)[0]["State"]["Running"])
+        '
+            )
+
+            if [ "$running" = "True" ] || [ "$running" = "true" ]
+            then
+                docker stop "{{ container_name }}" >/dev/null
+                echo "CHANGED"
+            else
+                echo "UNCHANGED"
+            fi
+        else
+            echo "UNCHANGED"
+        fi
+      args:
+        executable: /bin/bash
+      register: stop_result
+      changed_when: stop_result.stdout | trim == "CHANGED"
+      when: model_copy.changed or reference_copy.changed
+
+    - name: Pull updated container image from local Docker registry
+      ansible.builtin.command:
+        cmd: docker pull "{{ registry_image }}"
+      register: pull_result
+      changed_when: >
+        'Downloaded newer image' in pull_result.stdout or
+        'Pull complete' in pull_result.stdout
+
+    - name: Start inference container with environment variables
+      ansible.builtin.shell: |
+        desired_image_id=$(
+            docker image inspect "{{ registry_image }}" |
+            python3 -c '
+        import json
+        import sys
+        print(json.load(sys.stdin)[0]["Id"])
+        '
+        )
+
+        recreate="false"
+
+        if docker container inspect "{{ container_name }}" >/dev/null 2>&1
+        then
+            current_image_id=$(
+                docker container inspect "{{ container_name }}" |
+                python3 -c '
+        import json
+        import sys
+        print(json.load(sys.stdin)[0]["Image"])
+        '
+            )
+
+            running=$(
+                docker container inspect "{{ container_name }}" |
+                python3 -c '
+        import json
+        import sys
+        print(json.load(sys.stdin)[0]["State"]["Running"])
+        '
+            )
+
+            if [ "$current_image_id" != "$desired_image_id" ]
+            then
+                recreate="true"
+            elif [ "$running" != "True" ] && [ "$running" != "true" ]
+            then
+                recreate="true"
+            fi
+        else
+            recreate="true"
+        fi
+
+        if [ "$recreate" = "true" ]
+        then
+            docker rm -f "{{ container_name }}" >/dev/null 2>&1 || true
+
+            docker run -d \
+              --name "{{ container_name }}" \
+              --restart unless-stopped \
+              --network host \
+              -v "{{ deployment_directory }}/model.tflite:/models/model.tflite:ro" \
+              -v "{{ deployment_directory }}/reference_dist.json:/app/reference_dist.json:ro" \
+              -e MQTT_HOST=127.0.0.1 \
+              -e MQTT_PORT=1883 \
+              -e TRUCK_ID="{{ truck_id }}" \
+              -e MQTT_CLIENT_ID="{{ mqtt_client_id }}" \
+              -e MQTT_QOS=1 \
+              -e MODEL_PATH=/models/model.tflite \
+              -e STATS_PATH=/app/training_stats.npy \
+              "{{ registry_image }}" \
+              >/dev/null
+
+            echo "CHANGED"
+        else
+            echo "UNCHANGED"
+        fi
+      args:
+        executable: /bin/bash
+      register: start_result
+      changed_when: start_result.stdout | trim == "CHANGED"
+
+    - name: Wait 15 seconds and verify container is running
+      ansible.builtin.shell: |
+        sleep 15
+
+        running=$(
+            docker container inspect "{{ container_name }}" |
+            python3 -c '
+        import json
+        import sys
+        print(json.load(sys.stdin)[0]["State"]["Running"])
+        '
+        )
+
+        if [ "$running" != "True" ] && [ "$running" != "true" ]
+        then
+            echo "Container is not running"
+            docker logs "{{ container_name }}" || true
+            exit 1
+        fi
+
+        echo "Container is running"
+      args:
+        executable: /bin/bash
+      changed_when: false
