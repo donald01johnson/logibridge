@@ -24,3 +24,4 @@ Thumbs.db
 .venv/
 venv/
 .vscode/
+monitoring/psi_events.csv
