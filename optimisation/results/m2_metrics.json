@@ -1,0 +1,44 @@
+{
+  "calibration_sample_count": 200,
+  "calibration_source": "reproducible subset of normalized training features",
+  "confusion_matrix": [
+    [
+      24,
+      0,
+      0
+    ],
+    [
+      0,
+      18,
+      0
+    ],
+    [
+      0,
+      0,
+      18
+    ]
+  ],
+  "file_size_bytes": 4896,
+  "input_dtype": "<class 'numpy.int8'>",
+  "input_quantization": [
+    6.334371089935303,
+    -127
+  ],
+  "method": "Post-training full integer quantization",
+  "model_path": "optimisation/models/m2_int8.tflite",
+  "name": "PTQ Full INT8",
+  "optimization": "tf.lite.Optimize.DEFAULT",
+  "output_dtype": "<class 'numpy.int8'>",
+  "output_quantization": [
+    0.00390625,
+    -128
+  ],
+  "per_class_recall": {
+    "Critical": 1.0,
+    "Normal": 1.0,
+    "Warning": 1.0
+  },
+  "sha256": "21a0b623fd84b2c69c76d3253a89d85d6a2445c02d494656066e9d75ebb1edb5",
+  "validation_accuracy": 1.0,
+  "variant": "M2"
+}

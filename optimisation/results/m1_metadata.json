@@ -1,0 +1,8 @@
+{
+  "file_size_bytes": 5608,
+  "method": "Standard trained Keras model converted to FP32 TFLite",
+  "model_path": "optimisation/models/m1_fp32.tflite",
+  "name": "FP32 Baseline",
+  "sha256": "2120decff253847f8ac3a4205cac430efc5775305316abb8afae50af1f81d334",
+  "variant": "M1"
+}

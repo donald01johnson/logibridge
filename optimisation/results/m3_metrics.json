@@ -1,0 +1,76 @@
+{
+  "calibration_sample_count": 200,
+  "confusion_matrix": [
+    [
+      24,
+      0,
+      0
+    ],
+    [
+      0,
+      18,
+      0
+    ],
+    [
+      0,
+      0,
+      18
+    ]
+  ],
+  "file_size_bytes": 4896,
+  "input_dtype": "<class 'numpy.int8'>",
+  "input_quantization": [
+    6.334371089935303,
+    -127
+  ],
+  "measured_kernel_sparsity": {
+    "layers": {
+      "cargo_state": {
+        "sparsity": 0.3541666666666667,
+        "total_kernel_weights": 48,
+        "zero_weights": 17
+      },
+      "hidden_16": {
+        "sparsity": 0.349609375,
+        "total_kernel_weights": 512,
+        "zero_weights": 179
+      },
+      "hidden_32": {
+        "sparsity": 0.3489583333333333,
+        "total_kernel_weights": 192,
+        "zero_weights": 67
+      }
+    },
+    "sparsity": 0.3497340425531915,
+    "total_kernel_weights": 752,
+    "zero_weights": 263
+  },
+  "model_path": "optimisation/models/m3_pruned_int8.tflite",
+  "name": "35 Percent Pruned plus Full INT8 PTQ",
+  "output_dtype": "<class 'numpy.int8'>",
+  "output_quantization": [
+    0.00390625,
+    -128
+  ],
+  "per_class_recall": {
+    "Critical": 1.0,
+    "Normal": 1.0,
+    "Warning": 1.0
+  },
+  "pruned_keras_path": "optimisation/models/m3_pruned.keras",
+  "pruning_epochs_completed": 40,
+  "pruning_method": "TFMOT prune_low_magnitude on Dense kernels",
+  "pruning_schedule": {
+    "begin_step": 0,
+    "end_step": 600,
+    "final_sparsity": 0.35,
+    "frequency": 1,
+    "initial_sparsity": 0.0,
+    "power": 3,
+    "type": "PolynomialDecay"
+  },
+  "quantization": "Full INT8 PTQ",
+  "sha256": "d7578b7c2fd1b4e105a29ec7a8832505bef2bdcc5b278ee5106b9e0d18513ff8",
+  "validation_accuracy": 1.0,
+  "variant": "M3"
+}
