@@ -1,5 +1,9 @@
 {
+  "assignment_mapping": "The baseline is a Dense MLP with no convolutional filters. Complete hidden units are pruned as the Dense equivalent of structured filters.",
+  "baseline_parameter_count": 803,
   "calibration_sample_count": 200,
+  "compact_finetune_epochs_completed": 15,
+  "compact_parameter_count": 400,
   "confusion_matrix": [
     [
       24,
@@ -17,49 +21,27 @@
       18
     ]
   ],
-  "file_size_bytes": 4896,
+  "file_size_bytes": 4320,
   "input_dtype": "<class 'numpy.int8'>",
   "input_quantization": [
     6.334371089935303,
     -127
   ],
-  "measured_kernel_sparsity": {
-    "layers": {
-      "cargo_state": {
-        "sparsity": 0.3541666666666667,
-        "total_kernel_weights": 48,
-        "zero_weights": 17
-      },
-      "hidden_16": {
-        "sparsity": 0.349609375,
-        "total_kernel_weights": 512,
-        "zero_weights": 179
-      },
-      "hidden_32": {
-        "sparsity": 0.3489583333333333,
-        "total_kernel_weights": 192,
-        "zero_weights": 67
-      }
-    },
-    "sparsity": 0.3497340425531915,
-    "total_kernel_weights": 752,
-    "zero_weights": 263
-  },
   "model_path": "optimisation/models/m3_pruned_int8.tflite",
-  "name": "35 Percent Pruned plus Full INT8 PTQ",
+  "name": "35 Percent Structured Dense-Unit Pruning plus Full INT8 PTQ",
   "output_dtype": "<class 'numpy.int8'>",
   "output_quantization": [
     0.00390625,
     -128
   ],
+  "parameter_reduction_fraction": 0.50186799501868,
   "per_class_recall": {
     "Critical": 1.0,
     "Normal": 1.0,
     "Warning": 1.0
   },
-  "pruned_keras_path": "optimisation/models/m3_pruned.keras",
   "pruning_epochs_completed": 40,
-  "pruning_method": "TFMOT prune_low_magnitude on Dense kernels",
+  "pruning_method": "TFMOT PolynomialDecay schedule with complete Dense-unit masks, followed by physical architecture compaction",
   "pruning_schedule": {
     "begin_step": 0,
     "end_step": 600,
@@ -70,7 +52,48 @@
     "type": "PolynomialDecay"
   },
   "quantization": "Full INT8 PTQ",
-  "sha256": "d7578b7c2fd1b4e105a29ec7a8832505bef2bdcc5b278ee5106b9e0d18513ff8",
+  "sha256": "b015d326a54b1fd63dad51e4a39937905b121c7e69a6cc0319aeb1ab6f0f97fb",
+  "structured_keras_path": "optimisation/models/m3_structured.keras",
+  "structured_pruning": {
+    "layer_1_structured_sparsity": 0.34375,
+    "layer_2_structured_sparsity": 0.375,
+    "original_hidden_units": [
+      32,
+      16
+    ],
+    "overall_hidden_unit_reduction": 0.3541666666666667,
+    "removed_hidden_units": [
+      11,
+      6
+    ],
+    "removed_indices": {
+      "hidden_1": [
+        0,
+        1,
+        5,
+        8,
+        9,
+        18,
+        21,
+        22,
+        24,
+        26,
+        28
+      ],
+      "hidden_2": [
+        1,
+        5,
+        6,
+        9,
+        13,
+        15
+      ]
+    },
+    "retained_hidden_units": [
+      21,
+      10
+    ]
+  },
   "validation_accuracy": 1.0,
   "variant": "M3"
 }

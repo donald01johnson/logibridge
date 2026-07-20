@@ -59,9 +59,9 @@ the dataset is synthetic and adjacent sliding windows may overlap.
 
 | Variant | Mean latency (ms) | p95 latency (ms) | Size (KB) | Accuracy | Critical recall | Estimated energy (mJ) |
 |---|---:|---:|---:|---:|---:|---:|
-| M1 FP32 | 0.002826 | 0.002909 | 5.477 | 100% | 100% | 0.042383 |
-| M2 Full INT8 | 0.012944 | 0.013160 | 4.781 | 100% | 100% | 0.194162 |
-| M3 Pruned plus INT8 | 0.013294 | 0.015203 | 4.781 | 100% | 100% | 0.199416 |
+| M1 FP32 | 0.003501 | 0.004930 | 5.477 | 100% | 100% | 0.051994 |
+| M2 Full INT8 | 0.013597 | 0.015308 | 4.781 | 100% | 100% | 0.203961 |
+| M3 Structured plus INT8 | 0.013923 | 0.014422 | 4.219 | 100% | 100% | 0.208850 |
 
 M1 provides the best measured latency and estimated energy. M2 provides the
 smallest file size, but its absolute advantage over M1 is only 0.696 KB. M3
