@@ -35,12 +35,7 @@ synthetic validation data.
 
 ## 5. Optimisation
 
-The current M1 baseline is the reference FP32 model, while subsequent
-optimisation will produce the required full-INT8 post-training-quantized
-model and the structured-pruned-plus-INT8 variant. These variants will be
-compared for latency, p95 latency, file size, validation accuracy, energy per
-inference, and Critical-class recall before selecting the truck-deployment
-model.
+LogiEdge produced three deployment variants: the M1 FP32 baseline, M2 full INT8 PTQ using 200 calibration samples, and M3 with a 35% PolynomialDecay pruning schedule followed by full INT8 PTQ. All three retained 100% held-out accuracy and 100% Critical recall; the measured comparison showed M1 with the lowest mean latency, p95 latency, and estimated energy.
 
 ## 6. Conversion
 
@@ -61,13 +56,7 @@ to distinguish the baseline and OTA-updated TFLite artifacts.
 
 ## 8. CI/CD
 
-The current deployment pipeline builds an inference image from
-`python:3.11-slim`, installs dependencies before copying the TFLite model,
-validates the image, and supports runtime model selection through
-`MODEL_PATH`. Docker layer caching was demonstrated by changing only
-`model.tflite`: the earlier dependency and application layers were reused
-while the model-copy layer was rebuilt; Ansible-based fleet deployment will
-extend this stage in Task E2.
+The deployment workflow builds the inference image from python:3.11-slim, installs dependencies before copying the model layer, supports runtime selection through MODEL_PATH, and uses a local Docker registry. An exactly seven-task Ansible playbook deploys the model and PSI reference, pulls the image, starts the container with environment variables, and verifies it after 15 seconds; its unchanged second execution reported changed=0.
 
 ## 9. Inference
 
@@ -81,12 +70,7 @@ probabilities, and latency to
 
 ## 10. Monitor and Update
 
-Task E1 will monitor the rolling distribution of output confidence using
-Population Stability Index and raise a drift alert when PSI exceeds 0.25;
-detected degradation will provide evidence for collecting new labelled data
-and starting another training cycle. Updated models can then be validated
-and distributed through the Docker model layer and the selected OTA strategy,
-completing the feedback loop from deployed trucks back to Data Collection.
+The deployed monitoring workflow calculates PSI on a rolling window of 100 Normal-class confidence values every 60 seconds, alerts above 0.25, and records recovery below 0.10. Validated updates are distributed using a ten-truck canary strategy, with Docker model-layer caching and Ansible providing the controlled deployment path back into production.
 
 ## Circular Lifecycle
 
