@@ -1,0 +1,11 @@
+LogiEdge Demo Video
+===================
+
+Video URL:
+https://drive.google.com/file/d/1pIVJybLUdilSr3Lo1xPkXwnNdMViXLOU/view?usp=sharing
+
+Access:
+Anyone with the link can view.
+
+Repository:
+https://github.com/donald01johnson/logibridge
